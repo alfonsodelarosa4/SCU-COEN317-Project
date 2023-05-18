@@ -1,1 +1,2 @@
-# SCU-COEN317-Project
+# COEN317 Distributed Systems Project
+
