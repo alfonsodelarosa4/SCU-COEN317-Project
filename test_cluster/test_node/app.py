@@ -3,16 +3,18 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 import socket
 
+'''
+This Flask app will send a message to other the flask apps
+in the other pods.
+'''
+
 app = Flask(__name__)
 
-# IP address list
-# neighbor_nodes = ["127.0.0.1", "127.0.0.2", "127.0.0.3", "127.0.0.4"]
-
 # sends message to neighbors
-def send_ip_address():
+def send_message():
     my_ip = socket.gethostbyname(socket.gethostname())
     # iterate through each node
-    for i in range(130,140):
+    for i in range(0,100):
         neighbor_ip = "127.0.0." + str(i) + ":5000"
         # if the address is not it's own address
         if neighbor_ip != my_ip:
@@ -34,15 +36,13 @@ def receive_message():
     print(f"Received message: {message}")
     return "Message received"
 
-
 if __name__ == "__main__":
-    # # Create a background scheduler
-    # scheduler = BackgroundScheduler()
-    # scheduler.add_job(send_ip_address, "interval", seconds=10)
+    # Create a background scheduler
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(send_message, "interval", seconds=10)
 
-    # # Start the scheduler
-    # scheduler.start()
-
+    # Start the scheduler
+    scheduler.start()
 
     # Get the container IP address
     container_ip = socket.gethostbyname(socket.gethostname())
@@ -50,7 +50,7 @@ if __name__ == "__main__":
     # # Get the container port
     # container_port = request.environ.get('SERVER_PORT')
 
-    print(f"Container IP: {container_ip}")
+    # print(f"Container IP: {container_ip}")
     # print(f"Container Port: {container_port}")
 
     # Run the Flask app
