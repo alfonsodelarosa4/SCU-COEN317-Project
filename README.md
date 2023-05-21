@@ -31,6 +31,9 @@ kubectl version
 
 ### Running Cluster
 1. cd into **main_cluster** folder
+```
+cd main_cluster
+```
 2. Build container images
 ```
 docker build -t p2p-node:v1 ./p2p-node/
@@ -62,7 +65,7 @@ kubectl apply -f ./p2p-deployment.yaml
 ```
 kubectl get pods
 ```
-2. Open a new terminal and 
+2. Open a new terminal
 3. Enter the following command to view the logs of the pod with the pod name
 ```
 kubectl logs -f POD_NAME
@@ -85,6 +88,9 @@ This is a Kubernetes cluster of 4 pods. Each pod has a Docker container of a Fla
 
 ### Running Test Cluster
 1. cd into **test_cluster** folder
+```
+cd test_cluster
+```
 2. Build container image
 ```
 docker build -t my-p2p-test_node:v1 ./test_node/
