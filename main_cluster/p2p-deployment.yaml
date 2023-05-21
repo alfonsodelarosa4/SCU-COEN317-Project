@@ -1,0 +1,35 @@
+# P2P-SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: p2p-service
+spec:
+  selector:
+    app: p2p-node
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 5000
+  type: ClusterIP
+
+---
+# P2P-PODS
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: p2p-node
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: p2p-node
+  template:
+    metadata:
+      labels:
+        app: p2p-node
+    spec:
+      containers:
+        - name: p2p-node
+          image: localhost:5000/p2p-node:v1
+          ports:
+            - containerPort: 5000
