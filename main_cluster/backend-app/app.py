@@ -64,10 +64,10 @@ def get_topics():
 @app.route('/join_network', methods=['POST'])
 def new_p2p():
     # get ip address of new p2p node
-    ip_address = str(request.args.get('ip_address'))
+    ip_address = str(request.json.get('ip_address'))
     app.logger.debug("ip address")
     app.logger.debug(ip_address)
-    app.logger.debug(request.args)
+    app.logger.debug(request.json)
 
     # calculate new p2p_id
     temp = hashlib.sha1(ip_address.encode()).hexdigest()

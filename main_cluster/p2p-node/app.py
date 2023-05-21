@@ -66,9 +66,11 @@ def print_job():
 
 # join network and update ["p2p_id"]
 def join_network():
+    # get current ip address
+    global_var["ip_address"] = str(socket.gethostbyname(socket.gethostname()))
     # create values that will be sent to backend-pod as parameters
     args = {
-        "ip_address": str(global_var["ip_address"])
+        "ip_address": global_var["ip_address"]
     }
 
     # send post request to backend-pod via backend-service with 5 retries
@@ -98,8 +100,6 @@ def get_topics():
     app.logger.debug("p2p node retrieved topics")
 
 if __name__ == "__main__":
-    # get current ip address
-    global_var["ip_address"] = str(socket.gethostbyname(socket.gethostname()))
 
     # join network and get topics
     join_network()
