@@ -1,6 +1,6 @@
 # COEN317 P2P-Publish/Subscribe-Decentralized Social Network Project
 
-Group Members:
+## Group Members:
 - Abhishek Shukla
 - Alfonso De La Rosa
 - Gnana Mounika Jasti
