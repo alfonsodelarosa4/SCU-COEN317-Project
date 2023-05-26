@@ -77,16 +77,18 @@ class User:
         self.email = email
 
 class Leader:
-    def __init__(self,ip_address):
+    def __init__(self,ip_address,p2p_id):
         self.ip_address = ip_address
+        self.p2p_id = p2p_id
 
 class SubscribedTopic:
     def __init__(self,name):
         self.name = name
 
 class TopicNeighbor:
-    def __init__(self,ip_address,topic):
+    def __init__(self,ip_address,topic,p2p_id):
         self.ip_address = ip_address
+        self.p2p_id = p2p_id
         self.topic = topic
 
 class Post:
@@ -162,7 +164,7 @@ def delete_user(user_id):
 
 # LEADER
 # set the leader
-def set_leader(ip_address):
+def set_leader(ip_address,p2p_id):
     rw_locks["leader"].acquire_writelock()
     for leader in leaders_db.find():
         leader__id = str(leader['_id'])
@@ -170,7 +172,7 @@ def set_leader(ip_address):
         if result.deleted_count != 1:
             raise ValueError('Leader not found')
         
-    new_leader = Leader(ip_address=ip_address)
+    new_leader = Leader(ip_address=ip_address,p2p_id=p2p_id)
     leaders_db.insert_one(new_leader.__dict__).inserted_id
     rw_locks["leader"].release_writelock()
 
@@ -226,9 +228,9 @@ def delete_subscribed_topic(name):
 
 # TopicNeighbor
 # create topic neighbor
-def create_topic_neighbor(ip_address,topic):
+def create_topic_neighbor(ip_address,topic,p2p_id):
     rw_locks["topic-neighbor"].acquire_writelock()
-    new_neighbor = TopicNeighbor(ip_address=ip_address,topic=topic)
+    new_neighbor = TopicNeighbor(ip_address=ip_address,topic=topic,p2p_id=p2p_id)
     topic_id = topic_neighbors_db.insert_one(new_neighbor.__dict__).inserted_id
     rw_locks["topic-neighbor"].release_writelock()
     return str(topic_id)
@@ -248,6 +250,15 @@ def get_topic_neighbors_from_all_topics():
     neighbors = topic_neighbors_db.find()
     rw_locks["topic-neighbor"].release_readlock()
     return list(set([neighbor["ip_address"] for neighbor in neighbors]))
+
+def get_p2pids_of_all_neighbors():
+    rw_locks["topic-neighbor"].acquire_readlock()
+    neighbors = topic_neighbors_db.find()
+    rw_locks["topic-neighbor"].release_readlock()
+    neighbor_hash = dict()
+    for neighbor in neighbors:
+        neighbor_hash[neighbor["ip_address"]] = neighbor["p2p_id"]
+    return neighbor_hash
 
 # delete a neighbor from all topics
 def delete_neighbor_from_all_topics(ip_address):
@@ -356,6 +367,83 @@ def get_topics():
     global_var["topics"] = response.json().get("topics")
 
     app.logger.debug("p2p node retrieved topics")
+
+# start election
+@app.route('/start-election', methods=['POST'])
+def start_election():
+    thread = threading.Thread(target=election)
+    thread.start()
+    return jsonify({'message': "election started" })
+
+def election():
+    rw_locks["election"].acquire_writelock()
+    # get p2p_id of current p2p node
+    p2p_id = int(global_var["p2p_id"])
+
+    # get p2p_ids of all other topic neighbors
+    p2p_hash = get_p2pids_of_all_neighbors()
+
+    # whether the p2p ids of neighbors are bigger than p2p of current p2p node
+    neighbors_are_bigger = False
+
+    # bigger_neighbors[ip_address] = p2p_id
+    bigger_neighbors_hash = dict()
+
+    # check if any of the p2p ids of the neighbors are bigger than the p2p id of this current node
+    for ip_address, other_p2p_id in p2p_hash.items():
+        other_p2p_id = int(other_p2p_id)
+
+        if other_p2p_id > p2p_id:
+            neighbors_are_bigger = True
+            bigger_neighbors_hash[ip_address] = other_p2p_id
+
+    # call others
+    if neighbors_are_bigger:
+        bigger_neighbors_list = list(bigger_neighbors_hash.items())
+        # sort by p2p id
+        bigger_neighbors_list.sort(lambda value:value[1])
+        # reverse order
+        bigger_neighbors_list.reverse()
+
+        bigger_neighbor_responded = False
+
+        for ip_address,p2p_id in bigger_neighbors_list:
+            # send start election command to that ip address
+            url = f"http://{ip_address}:5000/start-election"
+            response = attempt_request(lambda: requests.post(url))
+
+            if response is not None:
+                app.logger.debug(f"{ip_address} responded and will perform election")
+                rw_locks["election"].release_writelock()
+                return
+
+    # elect itself
+    set_leader(global_var["ip_address"],global_var["p2p_id"])
+    # send coordinator messages to neighbors
+    send_coordinator_message(global_var["ip_address"],global_var["p2p_id"])
+    rw_locks["election"].release_writelock()
+
+def send_coordinator_message(leader_ip_address,leader_p2p_id):
+    # assign
+    ip_addresses = get_topic_neighbors_from_all_topics()
+
+    for ip_address in ip_addresses:
+        args = {
+            "ip_address": leader_ip_address,
+            "p2p_id": leader_p2p_id
+        }
+        url = f"http://{ip_address}:5000/relay-coordinator-message'"
+        response = attempt_request(lambda: requests.post(url,json=args))
+
+        if response is None:
+            app.logger.debug(f"{ip_address} did not receive relay message")
+
+@app.route('relay-coordinator-message',methods=['POST'])
+def relay_coordinator_message():
+    leader_ip_address = request.json.get('ip_address')
+    leader_p2p_id = request.json.get('p2p_id')
+    send_coordinator_message(leader_ip_address,leader_p2p_id)
+    return jsonify({"message":"coordinator message received"})
 
 if __name__ == "__main__":
     # join network and get topics
