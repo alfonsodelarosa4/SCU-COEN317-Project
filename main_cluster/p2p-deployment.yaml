@@ -1,35 +1,46 @@
-# P2P-SERVICE
-apiVersion: v1
-kind: Service
-metadata:
-  name: p2p-service
-spec:
-  selector:
-    app: p2p-node
-  ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 5000
-  type: ClusterIP
-
----
 # P2P-PODS
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: p2p-node
+  name: flask-mongo-app
 spec:
-  replicas: 4
+  replicas: 2
   selector:
     matchLabels:
-      app: p2p-node
+      app: flask-mongo-app
   template:
     metadata:
       labels:
-        app: p2p-node
+        app: flask-mongo-app
     spec:
       containers:
-        - name: p2p-node
-          image: localhost:5000/p2p-node:v1
-          ports:
-            - containerPort: 5000
+      - name: p2p-node
+        image: localhost:5000/p2p-node:v1
+        ports:
+        - containerPort: 5000
+      - name: mongo
+        image: localhost:5000/mongo:latest
+        ports:
+        - containerPort: 27017
+      volumes:
+      - name: mongo-storage
+        emptyDir: {}
+---
+# P2P-SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-mongo-service
+spec:
+  type: ClusterIP
+  selector:
+    app: flask-mongo-app
+  ports:
+    - name: flask-app-port
+      protocol: TCP
+      port: 5000
+      targetPort: 5000
+    - name: mongo-db-port
+      protocol: TCP
+      port: 27017
+      targetPort: 27017

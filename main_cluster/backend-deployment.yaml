@@ -1,34 +1,46 @@
-# BACKEND-SERVICE
-apiVersion: v1
-kind: Service
-metadata:
-  name: backend-service
-spec:
-  selector:
-    app: backend-app
-  ports:
-    - protocol: TCP
-      port: 5000
-      targetPort: 5000
-
----
 # BACKEND-PODS
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: backend-app
+  name: backend-mongo-app
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: backend-app
+      app: backend-mongo-app
   template:
     metadata:
       labels:
-        app: backend-app
+        app: backend-mongo-app
     spec:
       containers:
         - name: backend-app
           image: localhost:5000/backend-app:v1
           ports:
             - containerPort: 5000
+        - name: mongo
+          image: localhost:5000/mongo:latest
+          ports:
+            - containerPort: 27017
+      volumes:
+        - name: mongo-storage
+          emptyDir: {}
+---
+# BACKEND-SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+spec:
+  type: ClusterIP
+  selector:
+    app: backend-mongo-app
+  ports:
+    - name: backend-app-port
+      protocol: TCP
+      port: 5000
+      targetPort: 5000
+    - name: mongo-db-port
+      protocol: TCP
+      port: 27017
+      targetPort: 27017
