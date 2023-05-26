@@ -438,7 +438,7 @@ def send_coordinator_message(leader_ip_address,leader_p2p_id):
         if response is None:
             app.logger.debug(f"{ip_address} did not receive relay message")
 
-@app.route('relay-coordinator-message',methods=['POST'])
+@app.route('/relay-coordinator-message',methods=['POST'])
 def relay_coordinator_message():
     leader_ip_address = request.json.get('ip_address')
     leader_p2p_id = request.json.get('p2p_id')
