@@ -126,7 +126,7 @@ kubectl logs -f POD_NAME
 kubectl get pods
 ```
 2. Use the following number as the **pod-port** for either backend or p2p: 5000 (This number was obtained from the targetPort from the kubernetes yaml files)
-4. Pick a **local-port** value from the following range: 1024-49151. (If you are connecting to multiple pods at the same time, the local-port value must different for each pod you are accessing.)
+4. Pick a **local-port** value from the following range: 1024-49151. (If you are connecting to multiple pods at the same time, the **local-port** value must different for each pod you are accessing.)
 5. Open a separate terminal and enter the following command:
 ```
 kubectl port-forward <pod-name> <local-port>:<pod-port>
