@@ -48,16 +48,16 @@ docker pull mongo:latest
 4. Delete **registry** container in Docker Desktop, if not first time.
 5. Run registry container with the following code [The registry container will host Docker container images, such as flask app container image. When Kubernetes cluster is deployed, Kubernetes will retrieve the container images from the registry container]
 ```
-docker run -d -p 5000:5000 --name registry registry:2
+docker run -d -p 5010:5000 --name registry registry:2
 ```
 6. Tag and push container images to registry container with the following command:
 ```
-docker tag p2p-node:v1 localhost:5000/p2p-node:v1
-docker push localhost:5000/p2p-node:v1
-docker tag backend-app:v1 localhost:5000/backend-app:v1
-docker push localhost:5000/backend-app:v1
-docker tag mongo:latest localhost:5000/mongo:latest
-docker push localhost:5000/mongo:latest
+docker tag p2p-node:v1 localhost:5010/p2p-node:v1
+docker push localhost:5010/p2p-node:v1
+docker tag backend-app:v1 localhost:5010/backend-app:v1
+docker push localhost:5010/backend-app:v1
+docker tag mongo:latest localhost:5010/mongo:latest
+docker push localhost:5010/mongo:latest
 ```
 6. Deploy backend-app pods and service:
 ```
@@ -86,13 +86,13 @@ docker rm -f registry
 ```
 docker build -t p2p-node:v1 ./p2p-node/
 docker build -t backend-app:v1 ./backend-app/
-docker run -d -p 5000:5000 --name registry registry:2
-docker tag p2p-node:v1 localhost:5000/p2p-node:v1
-docker push localhost:5000/p2p-node:v1
-docker tag backend-app:v1 localhost:5000/backend-app:v1
-docker push localhost:5000/backend-app:v1
-docker tag mongo:latest localhost:5000/mongo:latest
-docker push localhost:5000/mongo:latest
+docker run -d -p 5010:5000 --name registry registry:2
+docker tag p2p-node:v1 localhost:5010/p2p-node:v1
+docker push localhost:5010/p2p-node:v1
+docker tag backend-app:v1 localhost:5010/backend-app:v1
+docker push localhost:5010/backend-app:v1
+docker tag mongo:latest localhost:5010/mongo:latest
+docker push localhost:5010/mongo:latest
 kubectl apply -f ./backend-deployment.yaml
 kubectl apply -f ./p2p-deployment.yaml
 kubectl get pods
@@ -126,7 +126,7 @@ kubectl logs -f POD_NAME
 kubectl get pods
 ```
 2. Use the following number as the **pod-port** for either backend or p2p: 5000 (This number was obtained from the targetPort from the kubernetes yaml files)
-4. Pick a **local-port** value from the following range: 1024-49151. (If you are connecting to multiple pods at the same time, the local-port value must different for each pod you are accessing.)
+4. Pick a **local-port** value from the following range: 1024-49151. (If you are connecting to multiple pods at the same time, the **local-port** value must different for each pod you are accessing.)
 5. Open a separate terminal and enter the following command:
 ```
 kubectl port-forward <pod-name> <local-port>:<pod-port>

@@ -15,11 +15,11 @@ spec:
     spec:
       containers:
       - name: p2p-node
-        image: localhost:5000/p2p-node:v1
+        image: localhost:5010/p2p-node:v1
         ports:
         - containerPort: 5000
       - name: mongo
-        image: localhost:5000/mongo:latest
+        image: localhost:5010/mongo:latest
         ports:
         - containerPort: 27017
       volumes:
