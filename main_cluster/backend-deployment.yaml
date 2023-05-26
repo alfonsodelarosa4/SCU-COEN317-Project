@@ -38,7 +38,9 @@ spec:
   ports:
     - name: backend-app-port
       protocol: TCP
+      #  the port that other services or clients can use to access the pods behind the service. It is the port number that is advertised by the service to the outside world.
       port: 5000
+      #  the port number on the pod to which the traffic will be forwarded by the service. It represents the port on which the application inside the pod is listening and expects to receive traffic.
       targetPort: 5000
     - name: mongo-db-port
       protocol: TCP
