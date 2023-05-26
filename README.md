@@ -65,7 +65,7 @@ kubectl apply -f ./backend-deployment.yaml
 ```
 7. Deploy p2p-node pods and service:
 ```
-kubectl apply -f ./p2p-deployment.yaml:
+kubectl apply -f ./p2p-deployment.yaml
 ```
 
 ### Terminate Main Cluster
