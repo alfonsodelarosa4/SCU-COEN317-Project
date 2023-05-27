@@ -72,8 +72,9 @@ class ReadAndWriteLock():
 rw_locks = defaultdict(lambda:ReadAndWriteLock())
 
 class P2PNode:
-    def __init__(self,ip_address):
+    def __init__(self,ip_address,p2p_id):
         self.ip_address = ip_address
+        self.p2p_id = p2p_id
 
 class Topic:
     def __init__(self,name):
@@ -90,12 +91,12 @@ class TopicMember:
 
 # P2PNodes
 # create p2pnode
-def create_p2pnode(ip_address):
+def create_p2pnode(ip_address,p2p_id):
     rw_locks["p2pnode"].acquire_writelock()
     try:
-        new_p2pnode = P2PNode(ip_address)
-        p2p_id = p2pnodes_db.insert_one(new_p2pnode.__dict__).inserted_id
-        p2pnode = p2pnodes_db.find_one({'_id': ObjectId(p2p_id)})
+        new_p2pnode = P2PNode(ip_address,p2p_id)
+        node_id = p2pnodes_db.insert_one(new_p2pnode.__dict__).inserted_id
+        p2pnode = p2pnodes_db.find_one({'_id': ObjectId(node_id)})
         p2pnode["_id"] = str(p2pnode["_id"])
         return p2pnode
     except:
@@ -113,6 +114,18 @@ def get_p2pnode(ip_address):
         return
     p2pnode = p2pnodes_db.find_one({'ip_address': ip_address})
 
+    if p2pnode:
+        p2pnode["_id"] = str(p2pnode["_id"])
+        rw_locks["p2pnode"].release_readlock()
+        return p2pnode
+    else:
+        rw_locks["p2pnode"].release_readlock()
+        app.logger.error('p2pnode not found')
+
+# get p2pnode
+def get_firstp2pnode():
+    rw_locks["p2pnode"].acquire_readlock()
+    p2pnode = p2pnodes_db.find_one()
     if p2pnode:
         p2pnode["_id"] = str(p2pnode["_id"])
         rw_locks["p2pnode"].release_readlock()
@@ -258,14 +271,14 @@ def attempt_request(request_func):
 
 # get topics
 # NEEDS TO CHANGE
-@app.route('/get_topics', methods=['GET'])
+@app.route('/get-topics', methods=['GET'])
 def send_topics():
     app.logger.debug("sent topics")
     return jsonify({'topics': ["food", "tech", "finance"]})
 
 # join network
 # NEEDS TO CHANGE
-@app.route('/join_network', methods=['POST'])
+@app.route('/join-network', methods=['POST'])
 def new_p2p():
     # get ip address of new p2p node
     ip_address = str(request.json.get('ip_address'))
@@ -280,6 +293,24 @@ def new_p2p():
     app.logger.debug("new node joined")
 
     return jsonify({'p2p_id': p2p_id })
+
+# start election
+@app.route('/start-election', methods=['POST'])
+def start_election():
+    # get random ip address from list of p2p nodes
+    p2p_node = get_firstp2pnode()
+    ip_address = p2p_node["ip_address"]
+
+    # send start election command to that ip address
+    url = f"http://{ip_address}:5000/start-election"
+
+    # get response
+    response = attempt_request(lambda: requests.post(url))
+    if response == None:
+        app.logger.debug("start election not sent")
+        return jsonify({'message': "start election not sent" })
+    else:
+        return jsonify({'message': f"start election sent to {ip_address}" })
 
 if __name__ == "__main__":
     scheduler.init_app(app)
