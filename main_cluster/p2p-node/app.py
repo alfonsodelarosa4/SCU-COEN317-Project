@@ -191,6 +191,14 @@ def get_leader():
         return None
 
 # SubscribedTopic
+@app.route('/create-subscribed-topic', methods=['POST'])
+def http_create_subscribed_topic():
+    name = str(request.json.get('name'))
+    if name == "" or name == None:
+        return ({"error":"invalid name"})
+    else:
+        return jsonify({"message": f'created {name}'})
+
 # create topic
 def create_subscribed_topic(name):
     rw_locks["topic"].acquire_writelock()
@@ -202,6 +210,7 @@ def create_subscribed_topic(name):
     new_topic = SubscribedTopic(name=name)
     topic_id = subscribed_topics_db.insert_one(new_topic.__dict__).inserted_id
     rw_locks["topic"].release_writelock()
+    return True
 
 # get subscribed topics
 def get_subscribed_topics():
@@ -228,6 +237,13 @@ def delete_subscribed_topic(name):
 
 # TopicNeighbor
 # create topic neighbor
+@app.route('/create-topic-neighbor', methods=['POST'])
+def http_create_topic_neighbor():
+    ip_address = str(request.json.get('ip_address'))
+    topic = str(request.json.get('topic'))
+    p2p_id = str(request.json.get('p2p_id'))
+    return jsonify({"message": str(create_topic_neighbor(ip_address,topic,p2p_id))})
+
 def create_topic_neighbor(ip_address,topic,p2p_id):
     rw_locks["topic-neighbor"].acquire_writelock()
     new_neighbor = TopicNeighbor(ip_address=ip_address,topic=topic,p2p_id=p2p_id)
@@ -251,6 +267,8 @@ def get_topic_neighbors_from_all_topics():
     rw_locks["topic-neighbor"].release_readlock()
     return list(set([neighbor["ip_address"] for neighbor in neighbors]))
 
+# gets p2p_ids of each topic neighbor
+# return list of p2p_ids
 def get_p2pids_of_all_neighbors():
     rw_locks["topic-neighbor"].acquire_readlock()
     neighbors = topic_neighbors_db.find()
@@ -337,26 +355,28 @@ def attempt_request(request_func):
 def join_network():
     # get current ip address
     global_var["ip_address"] = str(socket.gethostbyname(socket.gethostname()))
+    app.logger.debug("ip address: " + str(global_var["ip_address"]))
     # create values that will be sent to backend-pod as parameters
     args = {
         "ip_address": global_var["ip_address"]
     }
 
     # send post request to backend-pod via backend-service with 5 retries
-    response = attempt_request(lambda: requests.post("http://backend-service:5000/join_network",json=args))
+    response = attempt_request(lambda: requests.post("http://backend-service:5000/join-network",json=args))
     # if no response, exit
     if response == None:
         sys.exit()
 
     # get value from response
     global_var["p2p_id"] = str(response.json().get("p2p_id"))
+    app.logger.debug("p2p_id: " + str(global_var["p2p_id"]))
 
     app.logger.debug("p2p node joined network")
 
 # retrieve topics and update to global_var["topics"]
 def get_topics():
     # send get request to backend-pod via backend-service
-    response = attempt_request(lambda: requests.get("http://backend-service:5000/get_topics"))
+    response = attempt_request(lambda: requests.get("http://backend-service:5000/get-topics"))
     
     if response == None:
         # empty topics
@@ -366,17 +386,21 @@ def get_topics():
     # get topics
     global_var["topics"] = response.json().get("topics")
 
-    app.logger.debug("p2p node retrieved topics")
+    app.logger.debug("p2p node retrieved topics:")
+    app.logger.debug(f'{global_var["topics"]}')
 
-# start election
+# start leader election: bully algorithm
 @app.route('/start-election', methods=['POST'])
 def start_election():
+    app.logger.debug("backed or other p2p node called an election")
     thread = threading.Thread(target=election)
     thread.start()
     return jsonify({'message': "election started" })
 
+# actual election: bully algorithm
 def election():
     rw_locks["election"].acquire_writelock()
+    # STEP 1: see if current p2p_id is bigger than p2p_id of p2p neighbors
     # get p2p_id of current p2p node
     p2p_id = int(global_var["p2p_id"])
 
@@ -397,11 +421,14 @@ def election():
             neighbors_are_bigger = True
             bigger_neighbors_hash[ip_address] = other_p2p_id
 
+    # STEP 2: If the p2p ids of the p2p neighbors are bigger, send start election to them
     # call others
     if neighbors_are_bigger:
+        app.logger.debug("p2p ids of neighbors are bigger")
+        app.logger.debug("send start-election request to those neighbors")
         bigger_neighbors_list = list(bigger_neighbors_hash.items())
         # sort by p2p id
-        bigger_neighbors_list.sort(lambda value:value[1])
+        bigger_neighbors_list.sort(key= lambda value:value[1])
         # reverse order
         bigger_neighbors_list.reverse()
 
@@ -416,34 +443,61 @@ def election():
                 app.logger.debug(f"{ip_address} responded and will perform election")
                 rw_locks["election"].release_writelock()
                 return
+        app.logger.debug("none of the neighbors responded")
 
+    # STEP 3: If the other p2p nodes are not candidates or did not respond
+    # curent p2p node will elect itself
     # elect itself
-    set_leader(global_var["ip_address"],global_var["p2p_id"])
+    app.logger.debug("p2p node will elect itself")
+    leader_ip_address = global_var["ip_address"]
+    leader_p2p_id =global_var["p2p_id"]
+    set_leader(leader_ip_address,leader_p2p_id)
     # send coordinator messages to neighbors
-    send_coordinator_message(global_var["ip_address"],global_var["p2p_id"])
+    thread = threading.Thread(target=send_coordinator_message,args=(leader_ip_address,leader_p2p_id,"",))
+    thread.start()
     rw_locks["election"].release_writelock()
 
-def send_coordinator_message(leader_ip_address,leader_p2p_id):
+# send coordinator message to p2p node neighbors
+def send_coordinator_message(leader_ip_address,leader_p2p_id,sender_ip_address):
     # assign
     ip_addresses = get_topic_neighbors_from_all_topics()
-
+    app.logger.debug("p2p node send coordinator message to other nodes")
     for ip_address in ip_addresses:
+        # do not send coordinator message to sender
+        if sender_ip_address == ip_address:
+            continue
         args = {
             "ip_address": leader_ip_address,
-            "p2p_id": leader_p2p_id
+            "p2p_id": leader_p2p_id,
+            "sender" : global_var["ip_address"],
         }
-        url = f"http://{ip_address}:5000/relay-coordinator-message'"
+        url = f"http://{ip_address}:5000/relay-coordinator-message"
         response = attempt_request(lambda: requests.post(url,json=args))
 
         if response is None:
-            app.logger.debug(f"{ip_address} did not receive relay message")
+            app.logger.debug(f"{ip_address} did not receive coordinator message")
+    app.logger.debug("finished sending coordinator messages")
 
+# http request to relay coordinator messages
 @app.route('/relay-coordinator-message',methods=['POST'])
 def relay_coordinator_message():
+    app.logger.debug("p2p node received relay-coordinator-message")
     leader_ip_address = request.json.get('ip_address')
     leader_p2p_id = request.json.get('p2p_id')
-    send_coordinator_message(leader_ip_address,leader_p2p_id)
-    return jsonify({"message":"coordinator message received"})
+    sender_ip_address = request.json.get('sender')
+    current_leader_ip_address = get_leader()
+
+    if current_leader_ip_address == leader_ip_address:
+        message = f'{current_leader_ip_address} was already elected'
+        app.logger.debug(message)
+        return jsonify({"message":message})
+    else:
+        message = f'{current_leader_ip_address} will be elected'
+        set_leader(leader_ip_address,leader_p2p_id)
+        thread = threading.Thread(target=send_coordinator_message,args=(leader_ip_address,leader_p2p_id,sender_ip_address))
+        thread.start()
+        return jsonify({"message":message})
+    
 
 if __name__ == "__main__":
     # join network and get topics

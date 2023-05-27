@@ -137,6 +137,11 @@ http://localhost:<local-port>/endpoint
 ```
 7. Open Postman and use the URL provided
 
+### Or, get port-forwarding commands and url with the following .py file in /main_cluster folder
+```
+python port-forward.py
+```
+
 ## MAKING A PULL REQUEST
 0. Make sure your repo is updated
 ```
