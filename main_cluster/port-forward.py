@@ -24,7 +24,8 @@ def generate_port_forwarding_commands(pods_output):
 
 # get the terminal output of a command
 def get_output_of_command(command):
-    result = subprocess.run(command, capture_output=True, text=True)
+    command_list = command.split()
+    result = subprocess.run(command_list, capture_output=True, text=True)
     return result.stdout.strip()
 
 # get "kubectl get pods" output

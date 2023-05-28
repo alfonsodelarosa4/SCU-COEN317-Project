@@ -80,10 +80,6 @@ class Topic:
     def __init__(self,name):
         self.name = name
 
-class Leader:
-    def __init__(self,ip_address):
-        self.ip_address = ip_address
-
 class TopicMember:
     def __init__(self,topic,ip_address):
         self.ip_address = ip_address
@@ -175,34 +171,24 @@ def delete_topic(name):
         app.logger.debug("topic not found")
     rw_locks["topic"].release_writelock()
 
-
 # LEADER
 # set the leader
-def set_leader(ip_address):
+def set_leader(ip_address,p2p_id):
     rw_locks["leader"].acquire_writelock()
-    for leader in leaders_db.find():
-        leader__id = str(leader['_id'])
-        result = leaders_db.delete_one({'_id': ObjectId(leader__id)})
-        if result.deleted_count != 1:
-            app.logger.error('Leader not found')
-        
-    new_leader = Leader(ip_address=ip_address)
-    leaders_db.insert_one(new_leader.__dict__).inserted_id
+    global_var["leader"] = (ip_address,p2p_id)
     rw_locks["leader"].release_writelock()
 
 # get the leader
 # return ip address of the leader
 def get_leader():
     rw_locks["leader"].acquire_readlock()
-    leader = leaders_db.find_one()
+    leader_info = global_var["leader"]
     rw_locks["leader"].release_readlock()
-
-    if leader is not None:
-        app.logger.debug("leader found")
-        return leader
-    else:
-        app.logger.debug("leader not found")
+    if leader_info == None:
+        app.logger.debug("no leader")
         return None
+    else:
+        return leader_info
 
 # TopicMember
 # create topic member
