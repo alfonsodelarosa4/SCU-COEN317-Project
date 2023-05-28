@@ -318,3 +318,35 @@ if __name__ == "__main__":
 
     # run flask app
     app.run(host="0.0.0.0", port=5000)
+
+
+# unsubscribe for p2p
+@app.route('/unsubscribe', methods=['POST'])
+def unsubscribe():
+    p2p_id = request.json.get('p2p_id')
+    topic = request.json.get('topic')
+
+    if global_var['subscribers'] is not None and topic in global_var['subscribers']:
+        if p2p_id in global_var['subscribers'][topic]:
+            global_var['subscribers'][topic].remove(p2p_id)
+            app.logger.debug(f"P2P subscriber {p2p_id} unsubscribed from topic {topic}")
+            return jsonify({'status': 'success'})
+
+    app.logger.debug(f"P2P subscriber {p2p_id} is not subscribed to topic {topic}")
+    return jsonify({'status': 'failure', 'message': 'Subscriber is not subscribed to the topic'})
+
+
+# unsubscribe from a topic for a P2P leader
+@app.route('/unsubscribe_leader', methods=['POST'])
+def unsubscribe_leader():
+    topic = request.json.get('topic')
+    p2p_id = request.json.get('p2p_id')
+
+    if global_var['leader_topics'] is not None and p2p_id in global_var['leader_topics']:
+        if topic in global_var['leader_topics'][p2p_id]:
+            global_var['leader_topics'][p2p_id].remove(topic)
+            app.logger.debug(f"P2P leader {p2p_id} unsubscribed from topic {topic}")
+            return jsonify({'status': 'success'})
+
+    app.logger.debug(f"P2P leader {p2p_id} is not subscribed to topic {topic}")
+    return jsonify({'status': 'failure', 'message': 'Leader is not subscribed to the topic'})
