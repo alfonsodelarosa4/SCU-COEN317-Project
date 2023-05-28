@@ -71,16 +71,6 @@ class ReadAndWriteLock():
     
 rw_locks = defaultdict(lambda:ReadAndWriteLock())
 
-class User:
-    def __init__(self,name,email):
-        self.name = name
-        self.email = email
-
-class Leader:
-    def __init__(self,ip_address,p2p_id):
-        self.ip_address = ip_address
-        self.p2p_id = p2p_id
-
 class SubscribedTopic:
     def __init__(self,name):
         self.name = name
@@ -98,101 +88,29 @@ class Post:
         self.text = text
         self.timestamp = timestamp
 
-# USER
-# create user
-# returns mongodb_id of user
-'''
-@app.route('/create_user', methods=['POST'])
-def http_create_user():
-    name = request.json.get('name')
-    email = request.json.get('email')
-    user = create_user(name, email)
-    app.logger.debug(user)
-'''
-
-# create user
-def create_user(name,email):
-    new_user = User(name, email)
-    user_id = users_db.insert_one(new_user.__dict__).inserted_id
-    user = users_db.find_one({'_id': ObjectId(user_id)})
-    user["_id"] = str(user["_id"])
-    return user_id
-
-# get users
-# returns list of users
-def get_users():
-    users = []
-    for user in users_db.find():
-        user['_id'] = str(user['_id'])
-        users.append(user)
-    return users
-
-# get user
-def get_user(user_id):
-    if user_id == None or user_id == "":
-        raise ValueError('user_id is missing')
-
-    user = users_db.find_one({'_id': ObjectId(user_id)})
-
-    if user:
-        user["_id"] = str(user["_id"])
-        return user
-    else:
-        raise ValueError('User not found')
-
-# update user
-def update_user(user_id,name,email):
-    if user_id == None or user_id == "":
-        raise ValueError('user_id is missing')
-    if name == None or name == "":
-        raise ValueError('name is missing')
-    if email == None or email == "":
-        raise ValueError('email is missing')
-    
-    result = users_db.update_one(
-        {'_id': ObjectId(user_id)}, 
-        {'$set': {'name': name, 'email': email}}
-    )
-    if result.modified_count != 1:
-        raise ValueError('User not found')
-
-# delete user
-def delete_user(user_id):
-    result = users_db.delete_one({'_id': ObjectId(user_id)})
-    if result.deleted_count != 1:
-        raise ValueError('User not found')
-
 # LEADER
 # set the leader
 def set_leader(ip_address,p2p_id):
     rw_locks["leader"].acquire_writelock()
-    for leader in leaders_db.find():
-        leader__id = str(leader['_id'])
-        result = leaders_db.delete_one({'_id': ObjectId(leader__id)})
-        if result.deleted_count != 1:
-            raise ValueError('Leader not found')
-        
-    new_leader = Leader(ip_address=ip_address,p2p_id=p2p_id)
-    leaders_db.insert_one(new_leader.__dict__).inserted_id
+    global_var["leader"] = (ip_address,p2p_id)
     rw_locks["leader"].release_writelock()
 
 # get the leader
 # return ip address of the leader
 def get_leader():
     rw_locks["leader"].acquire_readlock()
-    leader = leaders_db.find_one()
+    leader_info = global_var["leader"]
     rw_locks["leader"].release_readlock()
-
-    if leader is not None:
-        app.logger.debug("leader found")
-        return leader["ip_address"]
-    else:
-        app.logger.debug("leader not found")
+    if leader_info == None:
+        app.logger.debug("no leader")
         return None
+    else:
+        return leader_info
 
 # SubscribedTopic
 @app.route('/create-subscribed-topic', methods=['POST'])
 def http_create_subscribed_topic():
+    create_subscribed_topic(name)
     name = str(request.json.get('name'))
     if name == "" or name == None:
         return ({"error":"invalid name"})
@@ -305,6 +223,7 @@ def get_posts_by_topic(topic):
     rw_locks["post"].release_readlock()
     return [post for post in posts]
 
+'''
 # example of a function scheduled periodically with scheduler
 def print_job():
     app.logger.debug("print job")
@@ -321,6 +240,7 @@ def print_job():
         app.logger.debug(users)
 
         global_var["turn"] = False
+'''
 
 '''
 given a request call, attempt_request attempts to
