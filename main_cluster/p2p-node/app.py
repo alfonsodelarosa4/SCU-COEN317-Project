@@ -110,8 +110,8 @@ def get_leader():
 # SubscribedTopic
 @app.route('/create-subscribed-topic', methods=['POST'])
 def http_create_subscribed_topic():
-    create_subscribed_topic(name)
     name = str(request.json.get('name'))
+    create_subscribed_topic(name)
     if name == "" or name == None:
         return ({"error":"invalid name"})
     else:
