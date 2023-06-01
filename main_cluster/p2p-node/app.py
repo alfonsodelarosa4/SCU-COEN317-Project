@@ -1,9 +1,13 @@
+import hashlib
 from flask import Flask, request, jsonify, session, g
 from flask_apscheduler import APScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 from collections import defaultdict
-import requests, socket, logging, time, sys, threading,os
+import requests, socket, logging, time, sys, threading,os,hashlib
+import random
+
 
 # CONSTANTS
 RETRY_COUNT = 3
@@ -82,11 +86,13 @@ class TopicNeighbor:
         self.topic = topic
 
 class Post:
-    def __init__(self, topic,ip_address,text,timestamp):
+    def __init__(self, topic,ip_address,text,timestamp,hash_id):
         self.topic = topic
         self.ip_address = ip_address
         self.text = text
         self.timestamp = timestamp
+        self.hash_id = hash_id
+
 
 # LEADER
 # set the leader
@@ -210,10 +216,11 @@ def delete_all_neighbors_from_a_topic(topic):
 
 # Post
 # create post
-def create_post(topic,ip_address,text,timestamp):
+def create_post(topic,ip_address,text,timestamp,hash_id):
     rw_locks["post"].acquire_writelock()
-    new_post = Post(topic=topic,ip_address=ip_address,text=text,timestamp=timestamp)
+    new_post = Post(topic=topic,ip_address=ip_address,text=text,timestamp=timestamp,hash_id=hash_id)
     post_id = posts_db.insert_one(new_post.__dict__).inserted_id
+    app.logger.debug
     rw_locks["post"].release_writelock()
 
 # get posts by topic
@@ -222,6 +229,13 @@ def get_posts_by_topic(topic):
     posts = posts_db.find({'topic':topic})
     rw_locks["post"].release_readlock()
     return [post for post in posts]
+
+#get post by hashid
+def get_post(hash_id):
+    rw_locks["post"].acquire_readlock()
+    post = posts_db.find_one({'hash_id': hash_id})
+    rw_locks["post"].release_readlock()
+    return post
 
 '''
 # example of a function scheduled periodically with scheduler
@@ -308,6 +322,143 @@ def get_topics():
 
     app.logger.debug("p2p node retrieved topics:")
     app.logger.debug(f'{global_var["topics"]}')
+
+#send posts to the nodes
+@app.route('/send_post', methods=['POST'])
+def http_send_post():
+    topic = str(request.json.get('topic'))
+    text = str(request.json.get('text'))
+    return jsonify({"message": str(send_post(topic,text))})
+
+# create hash id based on ip address, topic, text, and timestamp
+def generate_unique_id(ip_address, topic,text,timestamp):
+    concatenated_string = ip_address + topic + text + str(timestamp)
+    hash_object = hashlib.sha256(concatenated_string.encode())
+    # Get the hexadecimal representation of the hash
+    unique_id = str(hash_object.hexdigest())
+    return unique_id
+
+def send_post(topic,text):
+    timestamp = time.time()
+    hash_id = generate_unique_id(global_var["ip_address"], topic,text,timestamp)
+    post_id = create_post(topic,global_var["ip_address"],text,timestamp,hash_id)
+    post = posts_db.find_one({"_id": post_id})
+    if topic == "system":
+        neighbors = get_topic_neighbors_from_all_topics()
+    else:
+        neighbors = get_topic_neighbors(topic)
+    for neighbor in neighbors:
+        args = {
+            "author_ip_address": global_var["ip_address"],
+            "sender_ip_address": global_var["ip_address"],
+            "text": text,
+            "hash_id": hash_id,
+            "timestamp": str(timestamp),
+            "topic": topic,
+        }
+        url = f"http://{neighbor}:5000/relay_post"
+        response = attempt_request(lambda: requests.post(url,json=args))
+        
+        if response is None:
+            app.logger.debug(f"{neighbor} did not receive the post related to the topic{topic}")
+    app.logger.debug(f"finished sending post related to the topic{topic}")
+
+
+@app.route('/relay_post', methods=['POST'])
+def http_relay_post():
+    data = request.get_json()
+    hash_id = data.get('hash_id')
+    topic = data.get('topic')
+    existing_post = get_post(hash_id)
+    app.logger.debug("this was retrieved from the database of the receiving p2pnode:" + str(existing_post))
+    app.logger.debug("database of receiving p2p node of current topic: " + str(get_posts_by_topic(topic)))
+    if existing_post is not None:
+        # A post with this post_id already exists, so the incoming post is a duplicate
+        app.logger.debug("duplicate post received " + global_var["ip_address"])
+        return jsonify({"message": "Duplicate post received"})
+    # extract the rest of the post data
+    sender_ip_address = data.get('sender_ip_address')
+    author_ip_address = data.get('author_ip_address')
+    text = data.get('text')
+    timestamp = data.get('timestamp')
+    topic = data.get('topic')
+    create_post(topic,author_ip_address,text,timestamp,hash_id)
+    #get neighors of the topic
+    if topic == "system" or "delete_node":
+        neighbors = get_topic_neighbors_from_all_topics()
+    else:
+        neighbors = get_topic_neighbors(topic)
+    if topic == "delete_node":
+        delete_neighbor_from_all_topics(text)
+    for neighbor in neighbors:
+        if neighbor == author_ip_address or sender_ip_address:
+            continue
+        args = {
+            "sender_ip_address": global_var["ip_address"],
+            "author_ip_address": author_ip_address,
+            "text": text,
+            "hash_id": hash_id,
+            "timestamp": str(timestamp),
+            "topic": topic
+        }
+        url = f"http://{neighbor}:5000/relay_post"
+        response = attempt_request(lambda: requests.post(url,json=args))
+        if response is None:
+            app.logger.debug(f"{neighbor} did not receive the post related to the topic{topic}")
+    # Send a response back to the originating node
+    return jsonify({"message": "Post received and saved"})
+
+
+def checking_backend():
+    # get current learder's ip_address
+    (ip_address,p2p_id) = get_leader()
+    args = {
+        "ip_address": ip_address,
+        "message": "checking on backend server"
+    }
+    url = f"http://backend-service:5000/failure-ping"
+    response = attempt_request(lambda: requests.post(url,json=args))
+    
+    if response is None:
+        #No response from backend server, assuming server failure
+        #update all p2p nodes about server failer
+        app.logger.debug("Backend server haven't replyed back")
+        send_post("system","Backend failed")
+    app.logger.debug("Backend server responded")
+
+
+@app.route('/failure-ping', methods=['POST'])
+def failure_ping():
+    return jsonify({"message": f"Message received and Acknowledged"})
+
+
+def checking_random_node():
+    ip_addresses = get_topic_neighbors_from_all_topics()
+    random_ip_address = random.choice(ip_addresses)
+    args = {
+        "message": "checking on random node"
+    }
+    url = f"http://{random_ip_address}:5000/failure-ping"
+    response = attempt_request(lambda: requests.post(url,json=args))
+    if response is None:
+        #No response from thenode, assuming node failure
+        #update all p2p nodes about node failer
+        app.logger.debug(f"node with ip address {random_ip_address} hasn't replyed back")
+        delete_neighbor_from_all_topics(random_ip_address)
+        (leader_ip_address,p2p_id) = get_leader()
+        url = f"http://{leader_ip_address}:5000/failed-node"
+        response = attempt_request(lambda: requests.post(url,json={"message":f"{random_ip_address}"}))
+    else:
+        app.logger.debug(f"Node {random_ip_address} responded")
+
+@app.route('/failed-node', methods=['POST'])
+def failure_ping():
+    topic = "delete_node"
+    text = request.json.get('message')
+    delete_neighbor_from_all_topics(text)
+    return jsonify({"message": str(send_post(topic,text))})
+    
+
 
 # start leader election: bully algorithm
 @app.route('/start-election', methods=['POST'])
