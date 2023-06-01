@@ -31,9 +31,9 @@ global_var = defaultdict(lambda: None)
 M_BITS = 64
 RETRY_COUNT = 3
 
-# SQL database
 mongo_client = MongoClient('mongodb://localhost:27017')
 db = mongo_client.my_database
+  
 
 users_db = db['users']
 
@@ -311,6 +311,35 @@ def start_election():
         return jsonify({'message': "start election not sent" })
     else:
         return jsonify({'message': f"start election sent to {ip_address}" })
+    
+@app.route('/failure-ping', methods=['POST'])
+def failure_ping():
+    ip_address = str(request.json.get('ip_address'))
+    return jsonify({"message": f"Message received from leader node {ip_address} and Acknowledged"})
+
+def checking_leader():
+    # get current learder's ip_address
+    current_leader = get_leader()
+    args = {
+        "message": "checking on leader node"
+    }
+    url = f"http://{current_leader.ip_address}:5000/failure-ping"
+    response = attempt_request(lambda: requests.post(url,json=args))
+    
+    if response is None:
+        #No response from leader node, assuming node failure
+        #update all p2p nodes about leader failer
+        app.logger.debug("Leader node haven't replyed back")
+        p2pnode = get_firstp2pnode()
+        ip_address = p2pnode[ip_address]
+        args = {
+            "topic":"system",
+            "text": "checking on leader node"
+        }
+        url = f"http://{ip_address}:5000/send_post"
+        response = attempt_request(lambda: requests.post(url,json=args))
+    app.logger.debug("Leader node responded")
+
 
 if __name__ == "__main__":
     scheduler.init_app(app)
