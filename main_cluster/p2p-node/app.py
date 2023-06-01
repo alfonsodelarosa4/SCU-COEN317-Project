@@ -524,7 +524,7 @@ def checking_random_node():
         app.logger.debug(f"node with ip address {ip_address} haven't replyed back")
         current_leader_ip_address = get_leader()
         url = f"http://{current_leader_ip_address}:5000/failed-node"
-        response = attempt_request(lambda: requests.post(url,json={"random_ip_address":ip_address, "message":"node failure"}))
+        response = attempt_request(lambda: requests.post(url,json={"random_ip_address":ip_address, "message":f"node {ip_address} failure"}))
     app.logger.debug("Backend server responded")
 
 @app.route('/failed-node', methods=['POST'])
