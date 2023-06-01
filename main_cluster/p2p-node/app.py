@@ -75,16 +75,6 @@ class ReadAndWriteLock():
     
 rw_locks = defaultdict(lambda:ReadAndWriteLock())
 
-class User:
-    def __init__(self,name,email):
-        self.name = name
-        self.email = email
-
-class Leader:
-    def __init__(self,ip_address,p2p_id):
-        self.ip_address = ip_address
-        self.p2p_id = p2p_id
-
 class SubscribedTopic:
     def __init__(self,name):
         self.name = name
@@ -104,102 +94,30 @@ class Post:
         self.hash_id = hash_id
 
 
-# USER
-# create user
-# returns mongodb_id of user
-'''
-@app.route('/create_user', methods=['POST'])
-def http_create_user():
-    name = request.json.get('name')
-    email = request.json.get('email')
-    user = create_user(name, email)
-    app.logger.debug(user)
-'''
-
-# create user
-def create_user(name,email):
-    new_user = User(name, email)
-    user_id = users_db.insert_one(new_user.__dict__).inserted_id
-    user = users_db.find_one({'_id': ObjectId(user_id)})
-    user["_id"] = str(user["_id"])
-    return user_id
-
-# get users
-# returns list of users
-def get_users():
-    users = []
-    for user in users_db.find():
-        user['_id'] = str(user['_id'])
-        users.append(user)
-    return users
-
-# get user
-def get_user(user_id):
-    if user_id == None or user_id == "":
-        raise ValueError('user_id is missing')
-
-    user = users_db.find_one({'_id': ObjectId(user_id)})
-
-    if user:
-        user["_id"] = str(user["_id"])
-        return user
-    else:
-        raise ValueError('User not found')
-
-# update user
-def update_user(user_id,name,email):
-    if user_id == None or user_id == "":
-        raise ValueError('user_id is missing')
-    if name == None or name == "":
-        raise ValueError('name is missing')
-    if email == None or email == "":
-        raise ValueError('email is missing')
-    
-    result = users_db.update_one(
-        {'_id': ObjectId(user_id)}, 
-        {'$set': {'name': name, 'email': email}}
-    )
-    if result.modified_count != 1:
-        raise ValueError('User not found')
-
-# delete user
-def delete_user(user_id):
-    result = users_db.delete_one({'_id': ObjectId(user_id)})
-    if result.deleted_count != 1:
-        raise ValueError('User not found')
-
 # LEADER
 # set the leader
 def set_leader(ip_address,p2p_id):
     rw_locks["leader"].acquire_writelock()
-    for leader in leaders_db.find():
-        leader__id = str(leader['_id'])
-        result = leaders_db.delete_one({'_id': ObjectId(leader__id)})
-        if result.deleted_count != 1:
-            raise ValueError('Leader not found')
-        
-    new_leader = Leader(ip_address=ip_address,p2p_id=p2p_id)
-    leaders_db.insert_one(new_leader.__dict__).inserted_id
+    global_var["leader"] = (ip_address,p2p_id)
     rw_locks["leader"].release_writelock()
 
 # get the leader
 # return ip address of the leader
 def get_leader():
     rw_locks["leader"].acquire_readlock()
-    leader = leaders_db.find_one()
+    leader_info = global_var["leader"]
     rw_locks["leader"].release_readlock()
-
-    if leader is not None:
-        app.logger.debug("leader found")
-        return leader["ip_address"]
-    else:
-        app.logger.debug("leader not found")
+    if leader_info == None:
+        app.logger.debug("no leader")
         return None
+    else:
+        return leader_info
 
 # SubscribedTopic
 @app.route('/create-subscribed-topic', methods=['POST'])
 def http_create_subscribed_topic():
     name = str(request.json.get('name'))
+    create_subscribed_topic(name)
     if name == "" or name == None:
         return ({"error":"invalid name"})
     else:
@@ -319,6 +237,7 @@ def get_post(hash_id):
     rw_locks["post"].release_readlock()
     return post
 
+'''
 # example of a function scheduled periodically with scheduler
 def print_job():
     app.logger.debug("print job")
@@ -335,6 +254,7 @@ def print_job():
         app.logger.debug(users)
 
         global_var["turn"] = False
+'''
 
 '''
 given a request call, attempt_request attempts to
@@ -464,10 +384,12 @@ def http_relay_post():
     topic = data.get('topic')
     create_post(topic,author_ip_address,text,timestamp,hash_id)
     #get neighors of the topic
-    if topic == "system":
+    if topic == "system" or "delete_node":
         neighbors = get_topic_neighbors_from_all_topics()
     else:
         neighbors = get_topic_neighbors(topic)
+    if topic == "delete_node":
+        delete_neighbor_from_all_topics(text)
     for neighbor in neighbors:
         if neighbor == author_ip_address or sender_ip_address:
             continue
@@ -489,9 +411,9 @@ def http_relay_post():
 
 def checking_backend():
     # get current learder's ip_address
-    current_leader_ip_address = get_leader()
+    (ip_address,p2p_id) = get_leader()
     args = {
-        "ip_address": current_leader_ip_address,
+        "ip_address": ip_address,
         "message": "checking on backend server"
     }
     url = f"http://backend-service:5000/failure-ping"
@@ -512,25 +434,28 @@ def failure_ping():
 
 def checking_random_node():
     ip_addresses = get_topic_neighbors_from_all_topics()
-    ip_address = random.choice(ip_addresses)
+    random_ip_address = random.choice(ip_addresses)
     args = {
         "message": "checking on random node"
     }
-    url = f"http://{ip_address}:5000/failure-ping"
+    url = f"http://{random_ip_address}:5000/failure-ping"
     response = attempt_request(lambda: requests.post(url,json=args))
     if response is None:
         #No response from thenode, assuming node failure
         #update all p2p nodes about node failer
-        app.logger.debug(f"node with ip address {ip_address} haven't replyed back")
-        current_leader_ip_address = get_leader()
-        url = f"http://{current_leader_ip_address}:5000/failed-node"
-        response = attempt_request(lambda: requests.post(url,json={"random_ip_address":ip_address, "message":f"node {ip_address} failure"}))
-    app.logger.debug("Backend server responded")
+        app.logger.debug(f"node with ip address {random_ip_address} hasn't replyed back")
+        delete_neighbor_from_all_topics(random_ip_address)
+        (leader_ip_address,p2p_id) = get_leader()
+        url = f"http://{leader_ip_address}:5000/failed-node"
+        response = attempt_request(lambda: requests.post(url,json={"message":f"{random_ip_address}"}))
+    else:
+        app.logger.debug(f"Node {random_ip_address} responded")
 
 @app.route('/failed-node', methods=['POST'])
 def failure_ping():
-    topic = "system"
+    topic = "delete_node"
     text = request.json.get('message')
+    delete_neighbor_from_all_topics(text)
     return jsonify({"message": str(send_post(topic,text))})
     
 
