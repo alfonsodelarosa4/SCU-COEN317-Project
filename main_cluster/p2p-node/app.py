@@ -175,6 +175,12 @@ def create_topic_neighbor(ip_address,topic,p2p_id):
     rw_locks["topic-neighbor"].release_writelock()
     return str(topic_id)
 
+@app.route('/get-all-topic-neighbors')
+def get_all_topic_neighbors():
+    entries = topic_neighbors_db.find()
+    neighbors = [str(entry) for entry in entries]
+    return jsonify({"neighbors":str(neighbors)})
+
 # get topic neighbors
 # return list of ip addresses
 def get_topic_neighbors(topic):
@@ -555,7 +561,6 @@ def relay_coordinator_message():
     app.logger.debug("p2p node received relay-coordinator-message")
     leader_ip_address = request.json.get('ip_address')
     leader_p2p_id = request.json.get('p2p_id')
-    sender_ip_address = request.json.get('sender')
     current_leader_ip_address = get_leader()
 
     if current_leader_ip_address == leader_ip_address:
@@ -565,7 +570,7 @@ def relay_coordinator_message():
     else:
         message = f'{current_leader_ip_address} will be elected'
         set_leader(leader_ip_address,leader_p2p_id)
-        thread = threading.Thread(target=send_coordinator_message,args=(leader_ip_address,leader_p2p_id,sender_ip_address))
+        thread = threading.Thread(target=send_coordinator_message,args=(leader_ip_address,leader_p2p_id,global_var["ip_address"]))
         thread.start()
         return jsonify({"message":message})
     
