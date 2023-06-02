@@ -1,0 +1,46 @@
+# BACKEND-PODS
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-mongo-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-mongo-app
+  template:
+    metadata:
+      labels:
+        app: backend-mongo-app
+    spec:
+      containers:
+        - name: backend-app
+          image: gcr.io/coen317project/backend-app:v1
+          ports:
+            - containerPort: 5000
+        - name: mongo
+          image: gcr.io/coen317project/mongo:latest
+          ports:
+            - containerPort: 27017
+      volumes:
+        - name: mongo-storage
+          emptyDir: {}
+---
+# BACKEND-SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+spec:
+  type: ClusterIP
+  selector:
+    app: backend-mongo-app
+  ports:
+    - name: backend-app-port
+      protocol: TCP
+      port: 5000
+      targetPort: 5000
+    - name: mongo-db-port
+      protocol: TCP
+      port: 27017
+      targetPort: 27017
