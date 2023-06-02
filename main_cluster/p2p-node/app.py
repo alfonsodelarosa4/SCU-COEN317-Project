@@ -452,7 +452,7 @@ def checking_random_node():
         app.logger.debug(f"Node {random_ip_address} responded")
 
 @app.route('/failed-node', methods=['POST'])
-def failure_ping():
+def failed_node():
     topic = "delete_node"
     text = request.json.get('message')
     delete_neighbor_from_all_topics(text)

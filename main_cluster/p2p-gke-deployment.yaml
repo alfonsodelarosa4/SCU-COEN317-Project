@@ -1,0 +1,46 @@
+# P2P-PODS
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: p2p-mongo-app
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: p2p-mongo-app
+  template:
+    metadata:
+      labels:
+        app: p2p-mongo-app
+    spec:
+      containers:
+      - name: p2p-node
+        image: gcr.io/coen317project/p2p-node:v1  # Specify the image version
+        ports:
+        - containerPort: 5000
+      - name: mongo
+        image: gcr.io/coen317project/mongo:latest  # Specify the image version
+        ports:
+        - containerPort: 27017
+      volumes:
+      - name: mongo-storage
+        emptyDir: {}
+---
+# P2P-SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: p2p-mongo-service
+spec:
+  type: ClusterIP
+  selector:
+    app: p2p-mongo-app
+  ports:
+    - name: p2p-app-port
+      protocol: TCP
+      port: 5000
+      targetPort: 5000
+    - name: mongo-db-port
+      protocol: TCP
+      port: 27017
+      targetPort: 27017

@@ -82,6 +82,7 @@ docker rm -f registry
 ```
 
 ## QUICKLY STARTING UP/SHUTTING DOWN CLUSTER (TESTING)
+0. Ensure that you are in **main_cluster** folder
 1. Quickly starting up cluster:
 ```
 docker build -t p2p-node:v1 ./p2p-node/
@@ -168,3 +169,41 @@ git push
 ```
 8. You might get a message in the terminal. Execute suggested command
 9. On GitHub repo, create pull request. Do not merge
+
+
+### SYSTEM TEST
+
+1. Run kubernetes cluster with commands mentioned earlier (Ensure that Docker Desktop is running):
+2. cd in to **testing** folder
+3. notes on time 20s, 3m, 2h, 1h20m, 3h30m10s
+```
+locust -f topic-test.py --users 4 --spawn-rate 2 --run-time 20s
+```
+3. Run test and put results in csv with the following command
+
+
+
+### Google Cloud Kubernetes Engine Setup
+0. Create Google Cloud account and install on your machine. (Should be able to run **gcloud --version** command). In addition, you must create a project
+1. cd into **main_cluster** folder
+2. Create and push the docker images of the project
+```
+docker build -t p2p-node:v1 ./p2p-node/
+docker build -t backend-app:v1 ./backend-app/
+docker tag p2p-node:v1 gcr.io/coen317project/p2p-node:v1
+docker push gcr.io/coen317project/p2p-node:v1
+docker tag backend-app:v1 gcr.io/coen317project/backend-app:v1
+docker push gcr.io/coen317project/backend-app:v1
+docker tag mongo:latest gcr.io/coen317project/mongo:latest
+docker push gcr.io/coen317project/mongo:latest
+```
+Based on:
+```
+docker tag <IMAGE_NAME> gcr.io/<PROJECT_ID>/<IMAGE_NAME>:<TAG>
+docker push gcr.io/<PROJECT_ID>/<IMAGE_NAME>:<TAG>
+```
+```
+kubectl apply -f ./backend-gke-deployment.yaml
+kubectl apply -f ./p2p-gke-deployment.yaml
+kubectl get pods
+```
