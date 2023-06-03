@@ -138,6 +138,15 @@ def delete_p2pnode(ip_address):
         app.logger.error('User not found')
     rw_locks["p2pnode"].release_writelock()
 
+@app.route('/create-topic-db', methods=['POST'])
+def http_create_topic_db():
+    name = str(request.json.get('name'))
+    create_topic(name)
+    if name == "" or name == None:
+        return ({"error":"invalid name"})
+    else:
+        return jsonify({"message": f'created {name}'})
+
 # TOPIC
 def create_topic(name):
     # concurrency: read-write lock
@@ -197,6 +206,13 @@ def get_leader():
         return leader_info
 
 # TopicMember
+# http create topic member
+def http_create_topic_member():
+    # concurrency: read-write lock
+    ip_address = str(request.json.get('ip_address'))
+    topic = str(request.json.get('topic'))
+    return jsonify({"message": str(create_topic_member(ip_address,topic))})
+
 # create topic member
 def create_topic_member(ip_address,topic):
     # concurrency: read-write lock
