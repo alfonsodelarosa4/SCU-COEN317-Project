@@ -337,8 +337,8 @@ def get_leader_backend():
         # no leader
         # create POST request to backend service
         args = {
-            ip_address: global_var["ip_address"],
-            p2p_id: global_var["p2p_id"]
+            "ip_address": global_var["ip_address"],
+            "p2p_id": global_var["p2p_id"]
         }
         response = attempt_request(lambda: requests.post("http://backend-service:5000/set-first-leader",json=args))
 
