@@ -208,6 +208,14 @@ def get_p2pids_of_all_neighbors():
         neighbor_hash[neighbor["ip_address"]] = neighbor["p2p_id"]
     return neighbor_hash
 
+# get topic neighbors
+# return list of (ip address,p2p_id)
+def get_tuples_from_topic_neighbors(topic):
+    rw_locks["topic-neighbor"].acquire_readlock()
+    neighbors = topic_neighbors_db.find({'topic':topic})
+    rw_locks["topic-neighbor"].release_readlock()
+    return [(neighbor["ip_address"],neighbors["p2p_id"]) for neighbor in neighbors]
+
 # delete a neighbor from all topics
 def delete_neighbor_from_all_topics(ip_address):
     rw_locks["topic-neighbor"].acquire_writelock()
@@ -574,6 +582,148 @@ def relay_coordinator_message():
         thread.start()
         return jsonify({"message":message})
     
+
+@app.route('/unsubscribe', methods=['POST'])
+def unsubscribe():
+    # get topic from request
+    topic = request.json.get('topic')
+
+    # Retrieve the neighbors of the unsubscribing P2P node from the database (ip_address, p2p_id)
+    # list of tuples of the node's neighbors of that topic
+    neighbors_list = get_tuples_from_topic_neighbors(topic)
+    # list of ip addresses of each neighbor of that topic
+    neighbors_ip_addresses = [ ip_address for (ip_address, _) in neighbors_list]
+    # set of ip address of each neighbor of that topic
+    neighbors_set = set(neighbors_ip_addresses)
+
+    # given ip address, it provides p2p_id
+    neighbors_p2p = dict()
+    # given ip address of neighbor, gives parent of neighbor
+    parent_hash = dict()
+    # given ip address of neighbor, provides list of ip addresses of subsequent neighbors of current neighbor
+    neighbors_hash = dict()
+    # fills in the values
+    for (neighbor_ip_address,neighbor_p2p_id) in neighbors_list:
+        neighbors_p2p[neighbor_ip_address] = neighbor_p2p_id
+        parent_hash[neighbor_ip_address] = neighbor_ip_address
+
+    # iterate each ip address of the neighbors
+    # to get the subsequent neighbors
+    for neighbor_ip_address in neighbors_ip_addresses:
+        # requests the neighbors
+        response = attempt_request(lambda: requests.post(f"http://{neighbor_ip_address}:5000/get-topic-neighbors-by-topic", json=args))
+        app.logger.debug(f'neighbors of {neighbor_ip_address} for topic {topic}: ' + str(response))
+        if response is not None:
+            subsequent_neighbors = list(response.json().get("message"))
+            #  stores neighbors into the hash
+            neighbors_hash[neighbor_ip_address] = subsequent_neighbors
+
+    # given ip address, finds the root
+    def find_root(A):
+        while A != parent_hash[A]:
+            A = parent_hash[A]
+        return A
+    
+    # iterate each neighbor ip address
+    for neighbor in neighbors_list:
+        for subsequent_neighbor in neighbors_hash[neighbor]:
+            if subsequent_neighbor in neighbors_set:
+                # join them A<->E
+                rootA = find_root(subsequent_neighbor)
+                rootB = find_root(neighbor)
+                parent_hash[rootA] = rootB
+    
+    # list of all the roots 
+    root_list = list()
+    # adds the ip addresses of the root nodes
+    for node, parent in parent_hash.items():
+        if node == parent:
+            root_list.add(node)
+
+    # make adjacent nodes in root list neighbors
+    for i in len(root_list) - 1:
+        ip_address1 = root_list[i]
+        ip_address2 = root_list[i+1]
+        p2p_id1 = neighbors_p2p[ip_address1]
+        p2p_id2 = neighbors_p2p[ip_address2]
+
+        args = {
+            "ip_address": ip_address2,
+            "p2p_id" : p2p_id2,
+            "topic" : topic
+        }
+
+        response = attempt_request(lambda: requests.post(f"http://{ip_address1}:5000/create-topic-neighbor", json=args))
+        app.logger.debug(f'neighbors of {neighbor_ip_address} for topic {topic}: ' + str(response))
+
+        args = {
+            "ip_address": ip_address1,
+            "p2p_id" : p2p_id1,
+            "topic" : topic
+        }
+        response = attempt_request(lambda: requests.post(f"http://{ip_address2}:5000/create-topic-neighbor", json=args))
+        app.logger.debug(f'neighbors of {neighbor_ip_address} for topic {topic}: ' + str(response))
+    
+
+    # After creating the neighbor connections, tell backend to unsubscribe current node from topic
+    args = {
+        'ip_address': global_var["ip_address"],
+        'topic': topic
+    }
+    response = attempt_request(lambda: requests.post(f'http://{get_leader()[0]}/unsubscribe-node', json=args))
+    if response is not None and response.json().get('status') == 'success':
+        app.logger.debug('Node was unsubscribed')
+        return jsonify({"message":'Node was unsubscribed'})
+    else:
+        app.logger.error('Node was not unsubscribed')
+        return jsonify({"message":'Node was not unsubscribed'})
+
+@app.route('/unsubscribe-node', methods=['POST'])
+def unsubscribed_node():
+    args = {
+        'ip_address': request.json.get('ip_address'),
+        'topic': request.json.get('topic')
+    }
+    response = attempt_request(lambda: requests.post(f'http://backend-service/unsubscribe-node', json=args))
+    if response is not None and response.json().get('status') == 'success':
+        app.logger.debug('Node was unsubscribed')
+        return jsonify({"message":'Node was unsubscribed'})
+    else:
+        app.logger.error('Node was not unsubscribed')
+        return jsonify({"message":'Node was not unsubscribed'})
+
+@app.route('/create-topic', methods=['POST'])
+def create_topic():
+    topic = request.json.get('topic')
+    create_subscribed_topic(topic)
+
+    args = {
+        "ip_address":global_var["ip_address"],
+        "topic": topic
+    }
+    response = attempt_request(lambda: requests.post(f'http://{get_leader()[0]}/leader-create-topic', json=args))
+    if response is not None and response.json().get('status') == 'success':
+        app.logger.debug('Node created topic')
+        return jsonify({"message":'Node created topic'})
+    else:
+        app.logger.error('Node did not create topic')
+        return jsonify({"message":'Node did not create topic'})
+
+
+@app.route('/leader-create-topic', methods=['POST'])
+def leader_create_topic():
+    args = {
+        'ip_address': request.json.get('ip_address'),
+        'topic': request.json.get('topic')
+    }
+    response = attempt_request(lambda: requests.post(f'http://backend-service/create-topic', json=args))
+    if response is not None and response.json().get('status') == 'success':
+        app.logger.debug('Node created topic')
+        return jsonify({"message":'Node created topic'})
+    else:
+        app.logger.error('Node did not create topic')
+        return jsonify({"message":'Node did not create topic'})
+
 
 if __name__ == "__main__":
     # join network and get topics

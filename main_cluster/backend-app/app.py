@@ -227,6 +227,11 @@ def delete_all_members_from_a_topic(topic):
     results = topic_members_db.delete_many({'topic':topic})
     rw_locks["topic-member"].release_writelock()
 
+def delete_topic_member(ip_address,topic):
+    rw_locks["topic-member"].acquire_writelock()
+    result = topic_members_db.delete_many({'ip_address':ip_address,'topic':topic})
+    rw_locks["topic-member"].release_writelock()
+
 '''
 given a request_func, attempt_request attempts to
 send request call several times and retries 5 seconds
@@ -321,6 +326,23 @@ def checking_leader():
         url = f"http://{ip_address}:5000/start-election"
         response = attempt_request(lambda: requests.post(url))
     app.logger.debug("Leader node responded")
+
+
+@app.route('/unsubscribe-node', methods=['POST'])
+def unsubscribe_node():
+    topic = request.json.get('topic')
+    ip_address = request.json.get('ip_address')
+    delete_topic_member(ip_address,topic)
+    return jsonify({'message': f'node with ip address({ip_address}) unsubscribed from topic({topic})'})
+
+@app.route('/create-topic', methods=['POST'])
+def node_created_topic():
+    topic = request.json.get('topic')
+    ip_address = request.json.get('ip_address')
+    create_topic(topic)
+    create_topic_member(ip_address,topic)
+    return jsonify({"message":f'node with ip address({ip_address}) created topic({topic})'})
+
 
 
 if __name__ == "__main__":
