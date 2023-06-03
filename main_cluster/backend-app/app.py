@@ -207,6 +207,21 @@ def get_topic_members(topic):
     rw_locks["topic-member"].release_readlock()
     return [member["ip_address"] for member in members]
 
+# get p2pnode
+#mounika changes 
+@app.route('/get-first-topic-member', methods=['GET'])
+def get_firsttopicmember(topic):
+    rw_locks["p2pnode"].acquire_readlock()
+    p2pnode = p2pnodes_db.find_one({'topic':topic})
+    if p2pnode:
+        rw_locks["p2pnode"].release_readlock()
+        return jsonify({'p2p_id': p2pnode["p2p_id"],
+                        'ip_address': p2pnode["ip_address"]})
+    else:
+        rw_locks["p2pnode"].release_readlock()
+        app.logger.error('p2pnode not found')
+        return None
+    
 # gets ip addresses of each topic member
 # return list of ip addresses
 def get_topic_members_from_all_topics():
@@ -256,14 +271,45 @@ def attempt_request(request_func):
     return None
 
 # get topics
-# NEEDS TO CHANGE
 @app.route('/get-topics', methods=['GET'])
 def send_topics():
-    app.logger.debug("sent topics")
-    return jsonify({'topics': ["food", "tech", "finance"]})
+    app.logger.debug("sent topics: " + str(get_topics()))
+    return jsonify({'topics': str(get_topics())})
+
+# get leader from backend 
+@app.route('/get-leader-backend', methods=['GET'])
+def send_leader_backend():
+    leader_info = get_leader() 
+    if leader_info == None:
+        app.logger.debug("no leader in backend after receiving GET")
+        return jsonify({'message': "no leader"})
+    else:
+        app.logger.debug("leader retrieved")
+        (ip_address,p2p_id) = leader_info
+        return jsonify({'message': 'Found',
+                        'ip_address':ip_address,
+                        'p2p_id':p2p_id})
+
+# set first leader in backend
+@app.route('/set-first-leader', methods=['POST'])
+def set_first_leader_backend():
+    rw_locks["leader"].acquire_writelock()
+    ip_address = str(request.json.get('ip_address'))
+    p2p_id = str(request.json.get('p2p_id'))
+    if global_var["leader"] == None:
+        app.logger.debug(f'The following P2P node is a leader: {ip_address}')
+        global_var["leader"] = (ip_address,p2p_id)
+        rw_locks["leader"].release_writelock()
+        return jsonify({'message': 'you are leader'})
+    else:
+        app.logger.debug(f'The following P2P node tried to be the leader: {ip_address}')
+        (ip_address,p2p_id) = global_var["leader"]
+        rw_locks["leader"].release_writelock()
+        return jsonify({'message': 'Found',
+                        'ip_address':ip_address,
+                        'p2p_id':p2p_id})
 
 # join network
-# NEEDS TO CHANGE
 @app.route('/join-network', methods=['POST'])
 def new_p2p():
     # get ip address of new p2p node
@@ -275,11 +321,14 @@ def new_p2p():
     # calculate new p2p_id
     temp = hashlib.sha1(ip_address.encode()).hexdigest()
     p2p_id = str(int(temp[:M_BITS // 4], 16))
-
-    app.logger.debug("new node joined")
-
-    return jsonify({'p2p_id': p2p_id })
-
+    inserted_id = create_p2pnode(ip_address,p2p_id)
+    if inserted_id is not None:
+        app.logger.debug("new node is succesfully inserted in database")
+        return jsonify({'p2p_id': p2p_id })
+    else:
+        app.logger.debug("new node not inserted in db")
+        return jsonify({'message': "error: node not inserted"})
+   
 # start election
 @app.route('/start-election', methods=['POST'])
 def start_election():

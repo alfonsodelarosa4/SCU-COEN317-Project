@@ -7,6 +7,7 @@ from bson.objectid import ObjectId
 from collections import defaultdict
 import requests, socket, logging, time, sys, threading,os,hashlib
 import random
+import math
 
 
 # CONSTANTS
@@ -290,7 +291,6 @@ def attempt_request(request_func):
                 time.sleep(5)    
     return None
 
-
 # join network and update ["p2p_id"]
 def join_network():
     # get current ip address
@@ -305,13 +305,52 @@ def join_network():
     response = attempt_request(lambda: requests.post("http://backend-service:5000/join-network",json=args))
     # if no response, exit
     if response == None:
-        sys.exit()
+        sys.exit()   
 
     # get value from response
     global_var["p2p_id"] = str(response.json().get("p2p_id"))
     app.logger.debug("p2p_id: " + str(global_var["p2p_id"]))
 
     app.logger.debug("p2p node joined network")
+
+# get the information of leader from backend.
+def get_leader_backend():
+# send get request to backend-pod via backend-service
+    response = attempt_request(lambda: requests.get("http://backend-service:5000/get-leader-backend"))
+    message = response.json().get("message")
+    if message == "no leader":
+        app.logger.debug("no leader retrieved")
+        # no leader
+        # create POST request to backend service
+        args = {
+            ip_address: global_var["ip_address"],
+            p2p_id: global_var["p2p_id"]
+        }
+        response = attempt_request(lambda: requests.post("http://backend-service:5000/set-first-leader",json=args))
+
+        message = response.json().get("message")
+
+        if message == "you are leader":
+
+            # updates leader to ip address and p2p_id of current p2p node
+            set_leader(ip_address=global_var["ip_address"],p2p_id=global_var["p2p_id"])
+            app.logger.debug("current node is set to be leader")
+        else:
+            # updates leader to ip address and p2p_id from the values of the response
+            # ip address and p2p_id retrieved from 
+            leader_ip_address =  response.json().get("ip_address") 
+            leader_p2p_id = response.json().get("p2p_id")
+            set_leader(ip_address=leader_ip_address,p2p_id=leader_p2p_id)
+            app.logger.debug("ip address and p2pid are receieved from backend and they are set as leader")
+        
+    else:
+        # leader already exists and that information is received from backend
+        ip_address = response.json().get("ip_address")
+        p2p_id = response.json().get("p2p_id")
+        set_leader(ip_address=ip_address,p2p_id=p2p_id)
+
+        app.logger.debug("p2p node got information of leader :")
+        app.logger.debug(f'{global_var["leader"]}')
 
 # retrieve topics and update to global_var["topics"]
 def get_topics():
@@ -320,11 +359,12 @@ def get_topics():
     
     if response == None:
         # empty topics
-        global_var["topics"] = None
+        app.logger.debug("empty topic list is retrived from backend ")
+        global_var["topics"] = []
         return
 
     # get topics
-    global_var["topics"] = response.json().get("topics")
+    global_var["topics"] = response.json().get("topics",[])
 
     app.logger.debug("p2p node retrieved topics:")
     app.logger.debug(f'{global_var["topics"]}')
@@ -463,7 +503,6 @@ def failed_node():
     text = request.json.get('message')
     delete_neighbor_from_all_topics(text)
     return jsonify({"message": str(send_post(topic,text))})
-    
 
 
 # start leader election: bully algorithm
@@ -574,12 +613,123 @@ def relay_coordinator_message():
         thread = threading.Thread(target=send_coordinator_message,args=(leader_ip_address,leader_p2p_id,sender_ip_address))
         thread.start()
         return jsonify({"message":message})
+
+#closest member is calculated based on distance of geo co ordinates and they are made neighbours to reduce number of hops
+@app.route('/get-closest-topic-member', methods=['POST'])
+def get_closest_topic_member():
+    new_subscriber_lat = str(request.json.get('new_subscriber_lat'))
+    new_subscriber_long = str(request.json.get('new_subscriber_long'))
+    topic = str(request.json.get('topic'))
+
+    neighbor_ip_list = get_topic_neighbors(topic)
+
+    closest_ip_address = ""
+    closest_distance = math.inf
+    app.logger.debug("getting geo location for all neighbours using get-geo-location")
+    # call all neighbors of topic
+    for neighbor_ip in neighbor_ip_list:
+        response = attempt_request(lambda: requests.get(f'http://{neighbor_ip}:5000/get-geo-location'))
+        if response == None:
+            return
+        received_lat = int(response.json().get("geo_lat"))
+        received_long = int(response.json().get("geo_long"))
+
+        distance = (received_lat - new_subscriber_lat)**2 + (received_long - new_subscriber_long)**2
+
+        if distance < closest_distance:
+            closest_ip_address = neighbor_ip
+            closest_distance = distance
     
+    # check if current node is closer
+    distance = (global_var["geo_lat"] - new_subscriber_lat)**2 + (global_var["geo_lat"] - new_subscriber_long)**2
+    app.logger.debug("calculated distance and checking for closest node")
+    if distance < closest_distance:
+        # current node was closer, stop searching
+        closest_ip_address = neighbor_ip
+        closest_distance = global_var["ip_address"]
+        app.logger.debug("returning the closest node")
+        return jsonify({"message":"stop search",
+                        "ip_address": closest_ip_address,
+                        "p2p_id": global_var["p2p_id"]})
+    
+    else:
+        # neighbor was closer, continue searching
+        app.logger.debug("returning continue search")
+        return jsonify({"message":"continue search",
+                        "ip_address": closest_ip_address})
+            
+
+#subscribing the node to a topic
+@app.route('/subscribe', methods=['POST'])
+def http_join_topic():
+    topic = str(request.json.get('topic'))
+    thread = threading.Thread(target=join_topic,args=topic)
+    thread.start()
+    return jsonify({'message': "joining topic started" })
+
+def join_topic(topic):
+    # contact leader node with endpoint
+    app.logger.debug("calling backend to get the first topic member")
+    response = attempt_request(lambda: requests.get("http://backend-service:5000/get-first-topic-member"))
+    
+    if response == None:
+        app.logger.debug("no response from backend")  
+        return 
+    #succesfully received a random p2pnode of a topic from backend
+    app.logger.debug("p2pnode and ip_address of the node in the topic are retrieved")
+    closest_ip_address = response.json().get("ip_address")
+    closest_p2p_id = response.json().get("p2p_id")
+    #for all nodes in the topic claculate the closest ip address to make them neighbours
+    while True:
+        app.logger.debug("calling closest topic neighbour ")
+        response = attempt_request(lambda: requests.get(f'http://{closest_ip_address}:5000/get-closest-topic-neighbor'))
+        if response == None:
+            app.logger.debug("no response from closest subscriber")
+            break
+        message = response.json().get("message")
+        if message == "continue search":
+            # update ip_address
+            closest_ip_address = response.json().get("ip_address")
+        else:
+            # update closest_ip_address
+            app.logger.debug("closest ip address is retrieved")
+            closest_ip_address = response.json().get("ip_address")
+            closest_p2p_id = response.json().get("p2p_id")
+            break
+    
+    # make both joining p2p node and closest subscriber neighbors
+
+    # makes closest p2p node neighbor of current node
+    create_topic_neighbor(closest_ip_address,topic,closest_p2p_id)
+    # makes current node neighbor of closest p2p node
+
+    args = {
+        "ip_address": global_var["ip_address"],
+        "p2p_id": global_var["p2p_id"],
+        "topic" : topic,
+    }
+    url = f"http://{closest_ip_address}:5000/create-topic-neighbor'"
+    app.logger.debug("calling create topic neighbour to make the closest node the neighbour")
+    response = attempt_request(lambda: requests.post(url,json=args))
+
+def set_geo_location():
+    # set random value for geo_lat and geo_long
+    # value b/w 0 to 100
+    global_var["geo_lat"] = random.randint(0,100)
+    global_var["geo_long"] = random.randint(0,100)
+
+@app.route('/get-geo-location',methods=['GET'])
+def send_geo_location():
+    geo_lat = global_var["geo_lat"]
+    geo_long = global_var["geo_long"]
+    return jsonify({"geo_lat":str(geo_lat),"geo_long":str(geo_long)})
 
 if __name__ == "__main__":
     # join network and get topics
     join_network()
+    get_leader_backend()
     get_topics()
+    set_geo_location()
 
     # if no topics retrieved, exit
     if global_var["topics"] == None:
