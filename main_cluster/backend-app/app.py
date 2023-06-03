@@ -31,15 +31,11 @@ global_var = defaultdict(lambda: None)
 M_BITS = 64
 RETRY_COUNT = 3
 
+# MongoDB Database
 mongo_client = MongoClient('mongodb://localhost:27017')
 db = mongo_client.my_database
-  
-
-users_db = db['users']
-
 p2pnodes_db = db['p2p_nodes']
 topics_db = db['topics']
-leaders_db = db['leaders']
 topic_members_db = db['topic_members_db']
 
 # lock mechanism
@@ -88,6 +84,7 @@ class TopicMember:
 # P2PNodes
 # create p2pnode
 def create_p2pnode(ip_address,p2p_id):
+    # concurrency: read-write lock
     rw_locks["p2pnode"].acquire_writelock()
     try:
         new_p2pnode = P2PNode(ip_address,p2p_id)
@@ -103,6 +100,7 @@ def create_p2pnode(ip_address,p2p_id):
 
 # get p2pnode
 def get_p2pnode(ip_address):
+    # concurrency: read-write lock
     rw_locks["p2pnode"].acquire_readlock()
     if ip_address == None or ip_address == "":
         rw_locks["p2pnode"].release_writelock()
@@ -120,6 +118,7 @@ def get_p2pnode(ip_address):
 
 # get p2pnode
 def get_firstp2pnode():
+    # concurrency: read-write lock
     rw_locks["p2pnode"].acquire_readlock()
     p2pnode = p2pnodes_db.find_one()
     if p2pnode:
@@ -132,6 +131,7 @@ def get_firstp2pnode():
 
 # delete p2pnode
 def delete_p2pnode(ip_address):
+    # concurrency: read-write lock
     rw_locks["p2pnode"].acquire_writelock()
     result = p2pnodes_db.delete_one({'ip_address': ip_address})
     if result.deleted_count != 1:
@@ -140,6 +140,7 @@ def delete_p2pnode(ip_address):
 
 # TOPIC
 def create_topic(name):
+    # concurrency: read-write lock
     rw_locks["topic"].acquire_writelock()
     topic = topics_db.find_one({'name':name})
     if topic is not None:
@@ -152,6 +153,7 @@ def create_topic(name):
 
 # get subscribed topics
 def get_topics():
+    # concurrency: read-write lock
     rw_locks["topic"].acquire_readlock()
     topics = topics_db.find()
     rw_locks["topic"].release_readlock()   
@@ -159,12 +161,14 @@ def get_topics():
 
 # get specific subscribed topic
 def get_topic(name):
+    # concurrency: read-write lock
     rw_locks["topic"].acquire_readlock()
     topic = topics_db.find_one({'name':name})
     rw_locks["topic"].release_readlock()   
     return topic
 
 def delete_topic(name):
+    # concurrency: read-write lock
     rw_locks["topic"].acquire_writelock()
     result = topics_db.delete_one({'name': name})
     if result.deleted_count != 1:
@@ -174,6 +178,7 @@ def delete_topic(name):
 # LEADER
 # set the leader
 def set_leader(ip_address,p2p_id):
+    # concurrency: read-write lock
     rw_locks["leader"].acquire_writelock()
     global_var["leader"] = (ip_address,p2p_id)
     rw_locks["leader"].release_writelock()
@@ -181,6 +186,7 @@ def set_leader(ip_address,p2p_id):
 # get the leader
 # return ip address of the leader
 def get_leader():
+    # concurrency: read-write lock
     rw_locks["leader"].acquire_readlock()
     leader_info = global_var["leader"]
     rw_locks["leader"].release_readlock()
@@ -193,6 +199,7 @@ def get_leader():
 # TopicMember
 # create topic member
 def create_topic_member(ip_address,topic):
+    # concurrency: read-write lock
     rw_locks["topic-member"].acquire_writelock()
     new_topic = TopicMember(ip_address=ip_address,topic=topic)
     topic_id = topic_members_db.insert_one(new_topic.__dict__).inserted_id
@@ -202,15 +209,16 @@ def create_topic_member(ip_address,topic):
 # get topic members
 # return list of ip addresses
 def get_topic_members(topic):
+    # concurrency: read-write lock
     rw_locks["topic-member"].acquire_readlock()
     members = topic_members_db.find({'topic':topic})
     rw_locks["topic-member"].release_readlock()
     return [member["ip_address"] for member in members]
 
 # get p2pnode
-#mounika changes 
 @app.route('/get-first-topic-member', methods=['GET'])
 def get_firsttopicmember(topic):
+    # concurrency: read-write lock
     rw_locks["p2pnode"].acquire_readlock()
     p2pnode = p2pnodes_db.find_one({'topic':topic})
     if p2pnode:
@@ -225,6 +233,7 @@ def get_firsttopicmember(topic):
 # gets ip addresses of each topic member
 # return list of ip addresses
 def get_topic_members_from_all_topics():
+    # concurrency: read-write lock
     rw_locks["topic-member"].acquire_readlock()
     members = topic_members_db.find()
     rw_locks["topic-member"].release_readlock()
@@ -232,12 +241,14 @@ def get_topic_members_from_all_topics():
 
 # delete a member from all topics
 def delete_member_from_all_topics(ip_address):
+    # concurrency: read-write lock
     rw_locks["topic-member"].acquire_writelock()
     result = topic_members_db.delete_many({'ip_address':ip_address})
     rw_locks["topic-member"].release_writelock()
 
 # delete all members of from a topics
 def delete_all_members_from_a_topic(topic):
+    # concurrency: read-write lock
     rw_locks["topic-member"].acquire_writelock()
     results = topic_members_db.delete_many({'topic':topic})
     rw_locks["topic-member"].release_writelock()
@@ -270,19 +281,22 @@ def attempt_request(request_func):
                 time.sleep(5)    
     return None
 
-# get topics
+# get topics, return topics
 @app.route('/get-topics', methods=['GET'])
 def send_topics():
     app.logger.debug("sent topics: " + str(get_topics()))
     return jsonify({'topics': str(get_topics())})
 
-# get leader from backend 
+# get leader from backend, return leader leader
 @app.route('/get-leader-backend', methods=['GET'])
 def send_leader_backend():
-    leader_info = get_leader() 
+    # get leader
+    leader_info = get_leader()
+    # if no leader, send "no leader"
     if leader_info == None:
         app.logger.debug("no leader in backend after receiving GET")
         return jsonify({'message': "no leader"})
+    # if leader, send leader info
     else:
         app.logger.debug("leader retrieved")
         (ip_address,p2p_id) = leader_info
@@ -293,15 +307,20 @@ def send_leader_backend():
 # set first leader in backend
 @app.route('/set-first-leader', methods=['POST'])
 def set_first_leader_backend():
+    # concurrency: read-write lock
     rw_locks["leader"].acquire_writelock()
     ip_address = str(request.json.get('ip_address'))
     p2p_id = str(request.json.get('p2p_id'))
+    # if no leader
     if global_var["leader"] == None:
+        # change leader to received ip address p2p id
         app.logger.debug(f'The following P2P node is a leader: {ip_address}')
         global_var["leader"] = (ip_address,p2p_id)
         rw_locks["leader"].release_writelock()
         return jsonify({'message': 'you are leader'})
+    # if leader exists
     else:
+        # receive and send leader info
         app.logger.debug(f'The following P2P node tried to be the leader: {ip_address}')
         (ip_address,p2p_id) = global_var["leader"]
         rw_locks["leader"].release_writelock()
@@ -322,6 +341,7 @@ def new_p2p():
     temp = hashlib.sha1(ip_address.encode()).hexdigest()
     p2p_id = str(int(temp[:M_BITS // 4], 16))
     inserted_id = create_p2pnode(ip_address,p2p_id)
+    # send new p2p id
     if inserted_id is not None:
         app.logger.debug("new node is succesfully inserted in database")
         return jsonify({'p2p_id': p2p_id })
@@ -346,25 +366,29 @@ def start_election():
         return jsonify({'message': "start election not sent" })
     else:
         return jsonify({'message': f"start election sent to {ip_address}" })
-    
+
+# ping-ack protocol: receive failure ping, send ack
 @app.route('/failure-ping', methods=['POST'])
 def failure_ping():
     ip_address = str(request.json.get('ip_address'))
     return jsonify({"message": f"Message received from leader node {ip_address} and Acknowledged"})
 
+# pring-ack protocol: send leader ack
 def checking_leader():
     # get current learder's ip_address
     (ip_address,p2p_id) = get_leader()
     args = {
         "message": "checking on leader node"
     }
+    # send ping ack to leader
     url = f"http://{ip_address}:5000/failure-ping"
     response = attempt_request(lambda: requests.post(url,json=args))
     
+    # if no response, assume leader failed
     if response is None:
         #No response from leader node, assuming node failure
         #update all p2p nodes about leader failer
-        app.logger.debug("Leader node haven't replyed back")
+        app.logger.debug("Leader node hasn't replied back")
         p2pnode = get_firstp2pnode()
         ip_address = p2pnode['ip_address']
         url = f"http://{ip_address}:5000/start-election"
