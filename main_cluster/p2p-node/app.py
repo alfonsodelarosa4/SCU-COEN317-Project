@@ -8,6 +8,7 @@ from collections import defaultdict
 import requests, socket, logging, time, sys, threading,os,hashlib
 import random
 import math
+import signal
 
 
 # CONSTANTS
@@ -648,12 +649,12 @@ def relay_coordinator_message():
         return jsonify({"message":message})
 
 # http endpoint: closest member is calculated based on distance of geo co ordinates and they are made neighbours to reduce number of hops
-@app.route('/get-closest-topic-member', methods=['POST'])
+@app.route('/get-closest-topic-neighbor', methods=['GET'])
 def get_closest_topic_member():
     # get json infom from http request
-    new_subscriber_lat = str(request.json.get('new_subscriber_lat'))
-    new_subscriber_long = str(request.json.get('new_subscriber_long'))
-    topic = str(request.json.get('topic'))
+    new_subscriber_lat = int(request.json.get('new_subscriber_lat'))
+    new_subscriber_long = int(request.json.get('new_subscriber_long'))
+    topic = request.json.get('topic')
     # get all neighbors of topic
     neighbor_ip_list = get_topic_neighbors(topic)
     # temp values for closest subscriber
@@ -681,8 +682,7 @@ def get_closest_topic_member():
     # if current p2p node is closer, send p2p node
     if distance < closest_distance:
         # current node was closer, stop searching
-        closest_ip_address = neighbor_ip
-        closest_distance = global_var["ip_address"]
+        closest_ip_address = global_var["ip_address"]
         app.logger.debug("returning the closest node")
         return jsonify({"message":"stop search",
                         "ip_address": closest_ip_address,
@@ -699,7 +699,7 @@ def get_closest_topic_member():
 @app.route('/subscribe', methods=['POST'])
 def http_join_topic():
     topic = str(request.json.get('topic'))
-    thread = threading.Thread(target=join_topic,args=topic)
+    thread = threading.Thread(target=join_topic, args=(topic,))
     thread.start()
     return jsonify({'message': "joining topic started" })
 
@@ -707,7 +707,10 @@ def http_join_topic():
 def join_topic(topic):
     # contact leader node with endpoint
     app.logger.debug("calling backend to get the first topic member")
-    response = attempt_request(lambda: requests.get("http://backend-service:5000/get-first-topic-member"))
+    args = {
+        "topic": topic,
+    }
+    response = attempt_request(lambda: requests.get("http://backend-service:5000/get-first-topic-member",json=args))
     
     if response == None:
         app.logger.debug("no response from backend")  
@@ -715,11 +718,15 @@ def join_topic(topic):
     #succesfully received a random p2pnode of a topic from backend
     app.logger.debug("p2pnode and ip_address of the node in the topic are retrieved")
     closest_ip_address = response.json().get("ip_address")
-    closest_p2p_id = response.json().get("p2p_id")
+    closest_p2p_id = None
     #for all nodes in the topic claculate the closest ip address to make them neighbours
     while True:
         app.logger.debug("calling closest topic neighbour ")
-        response = attempt_request(lambda: requests.get(f'http://{closest_ip_address}:5000/get-closest-topic-neighbor'))
+        args = {
+            "new_subscriber_lat": str(global_var["geo_lat"]),
+            "new_subscriber_long": str(global_var["geo_long"])
+        }
+        response = attempt_request(lambda: requests.get(f'http://{closest_ip_address}:5000/get-closest-topic-neighbor',json=args))
         if response == None:
             app.logger.debug("no response from closest subscriber")
             break
@@ -745,15 +752,17 @@ def join_topic(topic):
         "p2p_id": global_var["p2p_id"],
         "topic" : topic,
     }
-    url = f"http://{closest_ip_address}:5000/create-topic-neighbor'"
+    url = f'http://{closest_ip_address}:5000/create-topic-neighbor'
     app.logger.debug("calling create topic neighbour to make the closest node the neighbour")
     response = attempt_request(lambda: requests.post(url,json=args))
+
 
 # set random value for geo_lat and geo_long
 def set_geo_location():
     # value b/w 0 to 100
     global_var["geo_lat"] = random.randint(0,100)
     global_var["geo_long"] = random.randint(0,100)
+    app.logger.debug(f'geo: {global_var["geo_lat"]}, {global_var["geo_long"]}')
 
 # http endpoint: get geo location of p2p node
 @app.route('/get-geo-location',methods=['GET'])
@@ -761,6 +770,12 @@ def send_geo_location():
     geo_lat = global_var["geo_lat"]
     geo_long = global_var["geo_long"]
     return jsonify({"geo_lat":str(geo_lat),"geo_long":str(geo_long)})
+
+# terminates the flask app to simulate node failure
+@app.route('/terminate', methods=['POST'])
+def http_terminate():
+    os.kill(os.getpid(), signal.SIGINT)
+    return jsonify({'message': "terminating" })
 
 if __name__ == "__main__":
     # join network and get topics

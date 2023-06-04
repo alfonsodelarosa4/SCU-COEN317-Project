@@ -5,6 +5,7 @@ from bson.objectid import ObjectId
 import requests, hashlib, logging,time
 from collections import defaultdict
 import requests, socket, logging, time, sys, threading,os
+import signal
 
 app = Flask(__name__)
 
@@ -207,8 +208,8 @@ def get_leader():
 
 # TopicMember
 # http create topic member
-def http_create_topic_member():
-    # concurrency: read-write lock
+@app.route('/create-topic-member-db', methods=['POST'])
+def http_create_topic_member_db():
     ip_address = str(request.json.get('ip_address'))
     topic = str(request.json.get('topic'))
     return jsonify({"message": str(create_topic_member(ip_address,topic))})
@@ -222,6 +223,11 @@ def create_topic_member(ip_address,topic):
     rw_locks["topic-member"].release_writelock()
     return str(topic_id)
 
+@app.route('/get-all-topic-members-db', methods=['GET'])
+def http_get_all_topic_members_db():
+    # concurrency: read-write lock
+    return jsonify({"message": str(get_topic_members_from_all_topics())})
+
 # get topic members
 # return list of ip addresses
 def get_topic_members(topic):
@@ -233,16 +239,19 @@ def get_topic_members(topic):
 
 # get p2pnode
 @app.route('/get-first-topic-member', methods=['GET'])
+def http_get_firsttopicmember():
+    topic = request.json.get('topic')
+    node = get_firsttopicmember(topic)
+    return jsonify({"ip_address": node["ip_address"]})
+
 def get_firsttopicmember(topic):
     # concurrency: read-write lock
     rw_locks["p2pnode"].acquire_readlock()
-    p2pnode = p2pnodes_db.find_one({'topic':topic})
-    if p2pnode:
-        rw_locks["p2pnode"].release_readlock()
-        return jsonify({'p2p_id': p2pnode["p2p_id"],
-                        'ip_address': p2pnode["ip_address"]})
+    p2pnode = topic_members_db.find_one({'topic':topic})
+    rw_locks["p2pnode"].release_readlock()
+    if p2pnode:        
+        return p2pnode
     else:
-        rw_locks["p2pnode"].release_readlock()
         app.logger.error('p2pnode not found')
         return None
     
@@ -411,6 +420,11 @@ def checking_leader():
         response = attempt_request(lambda: requests.post(url))
     app.logger.debug("Leader node responded")
 
+# terminates the flask app to simulate backend failure
+@app.route('/terminate', methods=['POST'])
+def http_terminate():
+    os.kill(os.getpid(), signal.SIGINT)
+    return jsonify({'message': "terminating" })
 
 if __name__ == "__main__":
     scheduler.init_app(app)
