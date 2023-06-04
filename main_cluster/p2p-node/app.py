@@ -7,6 +7,8 @@ from bson.objectid import ObjectId
 from collections import defaultdict
 import requests, socket, logging, time, sys, threading,os,hashlib
 import random
+import math
+import signal
 
 
 # CONSTANTS
@@ -35,13 +37,9 @@ the following can be used to output debug messages to kubectl logs:
 # following line makes debug messages visible in kubectl logs
 app.logger.setLevel(logging.DEBUG)
 
-# SQL database
+# MongoDB database
 mongo_client = MongoClient('mongodb://localhost:27017')
 db = mongo_client.my_database
-
-users_db = db['users']
-
-leaders_db = db['leaders']
 subscribed_topics_db = db['subscribed_topics']
 topic_neighbors_db = db['topic_neighbors']
 posts_db = db['posts']
@@ -97,6 +95,7 @@ class Post:
 # LEADER
 # set the leader
 def set_leader(ip_address,p2p_id):
+    # concurrency: read-write lock
     rw_locks["leader"].acquire_writelock()
     global_var["leader"] = (ip_address,p2p_id)
     rw_locks["leader"].release_writelock()
@@ -104,6 +103,7 @@ def set_leader(ip_address,p2p_id):
 # get the leader
 # return ip address of the leader
 def get_leader():
+    # concurrency: read-write lock
     rw_locks["leader"].acquire_readlock()
     leader_info = global_var["leader"]
     rw_locks["leader"].release_readlock()
@@ -125,6 +125,7 @@ def http_create_subscribed_topic():
 
 # create topic
 def create_subscribed_topic(name):
+    # concurrency: read-write lock
     rw_locks["topic"].acquire_writelock()
     topic = subscribed_topics_db.find_one({'name':name})
     if topic is not None:
@@ -138,6 +139,7 @@ def create_subscribed_topic(name):
 
 # get subscribed topics
 def get_subscribed_topics():
+    # concurrency: read-write lock
     rw_locks["topic"].acquire_readlock()
     topics = subscribed_topics_db.find()
     rw_locks["topic"].release_readlock()   
@@ -145,6 +147,7 @@ def get_subscribed_topics():
 
 # get specific subscribed topic
 def get_subscribed_topic(name):
+    # concurrency: read-write lock
     rw_locks["topic"].acquire_readlock()
     topic = subscribed_topics_db.find_one({'name':name})
     rw_locks["topic"].release_readlock()   
@@ -153,6 +156,7 @@ def get_subscribed_topic(name):
 # delete subscribed topic
 # returns whether deleted
 def delete_subscribed_topic(name):
+    # concurrency: read-write lock
     rw_locks["topic"].acquire_writelock()
     result = subscribed_topics_db.delete_one({'name': name})
     if result.deleted_count != 1:
@@ -163,12 +167,14 @@ def delete_subscribed_topic(name):
 # create topic neighbor
 @app.route('/create-topic-neighbor', methods=['POST'])
 def http_create_topic_neighbor():
+    # concurrency: read-write lock
     ip_address = str(request.json.get('ip_address'))
     topic = str(request.json.get('topic'))
     p2p_id = str(request.json.get('p2p_id'))
     return jsonify({"message": str(create_topic_neighbor(ip_address,topic,p2p_id))})
 
 def create_topic_neighbor(ip_address,topic,p2p_id):
+    # concurrency: read-write lock
     rw_locks["topic-neighbor"].acquire_writelock()
     new_neighbor = TopicNeighbor(ip_address=ip_address,topic=topic,p2p_id=p2p_id)
     topic_id = topic_neighbors_db.insert_one(new_neighbor.__dict__).inserted_id
@@ -177,13 +183,16 @@ def create_topic_neighbor(ip_address,topic,p2p_id):
 
 @app.route('/get-all-topic-neighbors')
 def get_all_topic_neighbors():
+    rw_locks["topic-neighbor"].acquire_readlock()
     entries = topic_neighbors_db.find()
+    rw_locks["topic-neighbor"].release_readlock()
     neighbors = [str(entry) for entry in entries]
     return jsonify({"neighbors":str(neighbors)})
 
 # get topic neighbors
 # return list of ip addresses
 def get_topic_neighbors(topic):
+    # concurrency: read-write lock
     rw_locks["topic-neighbor"].acquire_readlock()
     neighbors = topic_neighbors_db.find({'topic':topic})
     rw_locks["topic-neighbor"].release_readlock()
@@ -192,6 +201,7 @@ def get_topic_neighbors(topic):
 # gets ip addresses of each topic neighbor
 # return list of ip addresses
 def get_topic_neighbors_from_all_topics():
+    # concurrency: read-write lock
     rw_locks["topic-neighbor"].acquire_readlock()
     neighbors = topic_neighbors_db.find()
     rw_locks["topic-neighbor"].release_readlock()
@@ -200,6 +210,7 @@ def get_topic_neighbors_from_all_topics():
 # gets p2p_ids of each topic neighbor
 # return list of p2p_ids
 def get_p2pids_of_all_neighbors():
+    # concurrency: read-write lock
     rw_locks["topic-neighbor"].acquire_readlock()
     neighbors = topic_neighbors_db.find()
     rw_locks["topic-neighbor"].release_readlock()
@@ -208,22 +219,24 @@ def get_p2pids_of_all_neighbors():
         neighbor_hash[neighbor["ip_address"]] = neighbor["p2p_id"]
     return neighbor_hash
 
-# get topic neighbors
-# return list of (ip address,p2p_id)
-def get_tuples_from_topic_neighbors(topic):
-    rw_locks["topic-neighbor"].acquire_readlock()
-    neighbors = topic_neighbors_db.find({'topic':topic})
-    rw_locks["topic-neighbor"].release_readlock()
+	# get topic neighbors	
+# return list of (ip address,p2p_id)	
+def get_tuples_from_topic_neighbors(topic):	
+    rw_locks["topic-neighbor"].acquire_readlock()	
+    neighbors = topic_neighbors_db.find({'topic':topic})	
+    rw_locks["topic-neighbor"].release_readlock()	
     return [(neighbor["ip_address"],neighbors["p2p_id"]) for neighbor in neighbors]
 
 # delete a neighbor from all topics
 def delete_neighbor_from_all_topics(ip_address):
+    # concurrency: read-write lock
     rw_locks["topic-neighbor"].acquire_writelock()
     result = topic_neighbors_db.delete_many({'ip_address':ip_address})
     rw_locks["topic-neighbor"].release_writelock()
 
 # delete all neighbors of from a topics
 def delete_all_neighbors_from_a_topic(topic):
+    # concurrency: read-write lock
     rw_locks["topic-neighbor"].acquire_writelock()
     results = topic_neighbors_db.delete_many({'topic':topic})
     rw_locks["topic-neighbor"].release_writelock()
@@ -231,6 +244,7 @@ def delete_all_neighbors_from_a_topic(topic):
 # Post
 # create post
 def create_post(topic,ip_address,text,timestamp,hash_id):
+    # concurrency: read-write lock
     rw_locks["post"].acquire_writelock()
     new_post = Post(topic=topic,ip_address=ip_address,text=text,timestamp=timestamp,hash_id=hash_id)
     post_id = posts_db.insert_one(new_post.__dict__).inserted_id
@@ -239,6 +253,7 @@ def create_post(topic,ip_address,text,timestamp,hash_id):
 
 # get posts by topic
 def get_posts_by_topic(topic):
+    # concurrency: read-write lock
     rw_locks["post"].acquire_readlock()
     posts = posts_db.find({'topic':topic})
     rw_locks["post"].release_readlock()
@@ -246,6 +261,7 @@ def get_posts_by_topic(topic):
 
 #get post by hashid
 def get_post(hash_id):
+    # concurrency: read-write lock
     rw_locks["post"].acquire_readlock()
     post = posts_db.find_one({'hash_id': hash_id})
     rw_locks["post"].release_readlock()
@@ -298,7 +314,6 @@ def attempt_request(request_func):
                 time.sleep(5)    
     return None
 
-
 # join network and update ["p2p_id"]
 def join_network():
     # get current ip address
@@ -313,7 +328,7 @@ def join_network():
     response = attempt_request(lambda: requests.post("http://backend-service:5000/join-network",json=args))
     # if no response, exit
     if response == None:
-        sys.exit()
+        sys.exit()   
 
     # get value from response
     global_var["p2p_id"] = str(response.json().get("p2p_id"))
@@ -321,23 +336,62 @@ def join_network():
 
     app.logger.debug("p2p node joined network")
 
+# get the information of leader from backend.
+def get_leader_backend():
+# send get request to backend-pod via backend-service
+    response = attempt_request(lambda: requests.get("http://backend-service:5000/get-leader-backend"))
+    message = response.json().get("message")
+    if message == "no leader":
+        app.logger.debug("no leader retrieved")
+        # no leader
+        # create POST request to backend service
+        args = {
+            "ip_address": global_var["ip_address"],
+            "p2p_id": global_var["p2p_id"]
+        }
+        response = attempt_request(lambda: requests.post("http://backend-service:5000/set-first-leader",json=args))
+
+        message = response.json().get("message")
+        # if current p2p node is assigned leader
+        if message == "you are leader":
+            # updates leader to ip address and p2p_id of current p2p node
+            set_leader(ip_address=global_var["ip_address"],p2p_id=global_var["p2p_id"])
+            app.logger.debug("current node is set to be leader")
+        # if a different p2p node is assigned leader
+        else:
+            # updates leader to ip address and p2p_id from the values of the response
+            # ip address and p2p_id retrieved from 
+            leader_ip_address =  response.json().get("ip_address") 
+            leader_p2p_id = response.json().get("p2p_id")
+            set_leader(ip_address=leader_ip_address,p2p_id=leader_p2p_id)
+            app.logger.debug("ip address and p2pid are receieved from backend and they are set as leader")
+        
+    else:
+        # leader already exists and that information is received from backend
+        ip_address = response.json().get("ip_address")
+        p2p_id = response.json().get("p2p_id")
+        set_leader(ip_address=ip_address,p2p_id=p2p_id)
+        app.logger.debug("p2p node got information of leader :")
+        app.logger.debug(f'{global_var["leader"]}')
+
 # retrieve topics and update to global_var["topics"]
 def get_topics():
     # send get request to backend-pod via backend-service
     response = attempt_request(lambda: requests.get("http://backend-service:5000/get-topics"))
-    
+    # if no response
     if response == None:
         # empty topics
-        global_var["topics"] = None
+        app.logger.debug("empty topic list is retrived from backend ")
+        global_var["topics"] = []
         return
 
-    # get topics
-    global_var["topics"] = response.json().get("topics")
+    # get topics and assign topics
+    global_var["topics"] = response.json().get("topics",[])
 
     app.logger.debug("p2p node retrieved topics:")
     app.logger.debug(f'{global_var["topics"]}')
 
-#send posts to the nodes
+# http endpoint: send posts to the nodes
 @app.route('/send_post', methods=['POST'])
 def http_send_post():
     topic = str(request.json.get('topic'))
@@ -352,15 +406,19 @@ def generate_unique_id(ip_address, topic,text,timestamp):
     unique_id = str(hash_object.hexdigest())
     return unique_id
 
+# function: send post as publisher and send to neighbor of topic
 def send_post(topic,text):
     timestamp = time.time()
     hash_id = generate_unique_id(global_var["ip_address"], topic,text,timestamp)
     post_id = create_post(topic,global_var["ip_address"],text,timestamp,hash_id)
     post = posts_db.find_one({"_id": post_id})
-    if topic == "system":
+    # if system post, get neighbors of all topics
+    if topic == "system" or "delete_node":
         neighbors = get_topic_neighbors_from_all_topics()
+    # if not system post, get neighbors of one topic
     else:
         neighbors = get_topic_neighbors(topic)
+    # iterate through each neighbor, send post to neighbor
     for neighbor in neighbors:
         args = {
             "author_ip_address": global_var["ip_address"],
@@ -377,34 +435,42 @@ def send_post(topic,text):
             app.logger.debug(f"{neighbor} did not receive the post related to the topic{topic}")
     app.logger.debug(f"finished sending post related to the topic{topic}")
 
-
+# http endpoint: receive post and send to neighbors except sender. if duplicate, ignore
 @app.route('/relay_post', methods=['POST'])
 def http_relay_post():
+    # get info from JSON body in http message
     data = request.get_json()
     hash_id = data.get('hash_id')
     topic = data.get('topic')
-    existing_post = get_post(hash_id)
-    app.logger.debug("this was retrieved from the database of the receiving p2pnode:" + str(existing_post))
-    app.logger.debug("database of receiving p2p node of current topic: " + str(get_posts_by_topic(topic)))
-    if existing_post is not None:
-        # A post with this post_id already exists, so the incoming post is a duplicate
-        app.logger.debug("duplicate post received " + global_var["ip_address"])
-        return jsonify({"message": "Duplicate post received"})
-    # extract the rest of the post data
-    sender_ip_address = data.get('sender_ip_address')
-    author_ip_address = data.get('author_ip_address')
     text = data.get('text')
     timestamp = data.get('timestamp')
     topic = data.get('topic')
+    author_ip_address = data.get('author_ip_address')
+    sender_ip_address = data.get('sender_ip_address')
+    # check if post already exists
+    existing_post = get_post(hash_id)
+    # if duplicate hash id,
+    if existing_post is not None:
+        # check if other values are the same too
+        if (existing_post["ip_address"] == author_ip_address and existing_post["topic"] == topic and existing_post["text"] == text and existing_post["timestamp"] == timestamp):
+            # A post with this post_id already exists, so the incoming post is a duplicate
+            app.logger.debug("this was retrieved from the database of the receiving p2pnode:" + str(existing_post))
+            app.logger.debug("duplicate post received " + global_var["ip_address"])
+            return jsonify({"message": "Duplicate post received"})
+    # store post as entry
     create_post(topic,author_ip_address,text,timestamp,hash_id)
-    #get neighors of the topic
+    # if system post, get neighbors of all topics
     if topic == "system" or "delete_node":
         neighbors = get_topic_neighbors_from_all_topics()
+    # if not system post, get neighbors of one topic
     else:
         neighbors = get_topic_neighbors(topic)
+    # if post is delete node
     if topic == "delete_node":
         delete_neighbor_from_all_topics(text)
+    # iterate through each neighbor, send post to neighbor
     for neighbor in neighbors:
+        # do not sent post to sender
         if neighbor == author_ip_address or sender_ip_address:
             continue
         args = {
@@ -422,7 +488,7 @@ def http_relay_post():
     # Send a response back to the originating node
     return jsonify({"message": "Post received and saved"})
 
-
+# check backend for failure
 def checking_backend():
     # get current learder's ip_address
     (ip_address,p2p_id) = get_leader()
@@ -432,7 +498,7 @@ def checking_backend():
     }
     url = f"http://backend-service:5000/failure-ping"
     response = attempt_request(lambda: requests.post(url,json=args))
-    
+    # if no response, assume failure
     if response is None:
         #No response from backend server, assuming server failure
         #update all p2p nodes about server failer
@@ -440,39 +506,43 @@ def checking_backend():
         send_post("system","Backend failed")
     app.logger.debug("Backend server responded")
 
-
+# ping-ack protocol: receive failure ping, send ack
 @app.route('/failure-ping', methods=['POST'])
 def failure_ping():
     return jsonify({"message": f"Message received and Acknowledged"})
 
-
+# check random node for failure
 def checking_random_node():
+    # get ip addresses of all neighbors
     ip_addresses = get_topic_neighbors_from_all_topics()
+    # pick a random one
     random_ip_address = random.choice(ip_addresses)
     args = {
         "message": "checking on random node"
     }
+    # check that ip address
     url = f"http://{random_ip_address}:5000/failure-ping"
     response = attempt_request(lambda: requests.post(url,json=args))
+    # if no response, assume failure
     if response is None:
         #No response from thenode, assuming node failure
         #update all p2p nodes about node failer
         app.logger.debug(f"node with ip address {random_ip_address} hasn't replyed back")
         delete_neighbor_from_all_topics(random_ip_address)
+        # tell leader node
         (leader_ip_address,p2p_id) = get_leader()
         url = f"http://{leader_ip_address}:5000/failed-node"
         response = attempt_request(lambda: requests.post(url,json={"message":f"{random_ip_address}"}))
     else:
         app.logger.debug(f"Node {random_ip_address} responded")
 
+# if node failed, send failure node post to everyone
 @app.route('/failed-node', methods=['POST'])
 def failed_node():
     topic = "delete_node"
     text = request.json.get('message')
     delete_neighbor_from_all_topics(text)
     return jsonify({"message": str(send_post(topic,text))})
-    
-
 
 # start leader election: bully algorithm
 @app.route('/start-election', methods=['POST'])
@@ -544,9 +614,10 @@ def election():
 
 # send coordinator message to p2p node neighbors
 def send_coordinator_message(leader_ip_address,leader_p2p_id,sender_ip_address):
-    # assign
+    # get all neighbors
     ip_addresses = get_topic_neighbors_from_all_topics()
     app.logger.debug("p2p node send coordinator message to other nodes")
+    # iterate through each ip address
     for ip_address in ip_addresses:
         # do not send coordinator message to sender
         if sender_ip_address == ip_address:
@@ -563,25 +634,135 @@ def send_coordinator_message(leader_ip_address,leader_p2p_id,sender_ip_address):
             app.logger.debug(f"{ip_address} did not receive coordinator message")
     app.logger.debug("finished sending coordinator messages")
 
-# http request to relay coordinator messages
+# http endponit: to relay coordinator messages
 @app.route('/relay-coordinator-message',methods=['POST'])
 def relay_coordinator_message():
     app.logger.debug("p2p node received relay-coordinator-message")
+    # get json info from http request
     leader_ip_address = request.json.get('ip_address')
     leader_p2p_id = request.json.get('p2p_id')
+    sender_ip_address = request.json.get('sender')
     current_leader_ip_address = get_leader()
-
+    # if leader is same, ignore
     if current_leader_ip_address == leader_ip_address:
         message = f'{current_leader_ip_address} was already elected'
         app.logger.debug(message)
         return jsonify({"message":message})
+    # if leader not the same, update leader and send message to coordinator
     else:
         message = f'{current_leader_ip_address} will be elected'
         set_leader(leader_ip_address,leader_p2p_id)
-        thread = threading.Thread(target=send_coordinator_message,args=(leader_ip_address,leader_p2p_id,global_var["ip_address"]))
+        thread = threading.Thread(target=send_coordinator_message,args=(leader_ip_address,leader_p2p_id,sender_ip_address))
         thread.start()
         return jsonify({"message":message})
+
+# http endpoint: closest member is calculated based on distance of geo co ordinates and they are made neighbours to reduce number of hops
+@app.route('/get-closest-topic-neighbor', methods=['GET'])
+def get_closest_topic_member():
+    # get json infom from http request
+    new_subscriber_lat = int(request.json.get('new_subscriber_lat'))
+    new_subscriber_long = int(request.json.get('new_subscriber_long'))
+    topic = request.json.get('topic')
+    # get all neighbors of topic
+    neighbor_ip_list = get_topic_neighbors(topic)
+    # temp values for closest subscriber
+    closest_ip_address = ""
+    closest_distance = math.inf
+    app.logger.debug("getting geo location for all neighbours using get-geo-location")
+    # call all neighbors of topic
+    for neighbor_ip in neighbor_ip_list:
+        # get geo location of neighbor
+        response = attempt_request(lambda: requests.get(f'http://{neighbor_ip}:5000/get-geo-location'))
+        if response == None:
+            return
+        received_lat = int(response.json().get("geo_lat"))
+        received_long = int(response.json().get("geo_long"))
+        # calculate distance
+        distance = (received_lat - new_subscriber_lat)**2 + (received_long - new_subscriber_long)**2
+        # if closer, then update distance
+        if distance < closest_distance:
+            closest_ip_address = neighbor_ip
+            closest_distance = distance
     
+    # check if current node is closer
+    distance = (global_var["geo_lat"] - new_subscriber_lat)**2 + (global_var["geo_lat"] - new_subscriber_long)**2
+    app.logger.debug("calculated distance and checking for closest node")
+    # if current p2p node is closer, send p2p node
+    if distance < closest_distance:
+        # current node was closer, stop searching
+        closest_ip_address = global_var["ip_address"]
+        app.logger.debug("returning the closest node")
+        return jsonify({"message":"stop search",
+                        "ip_address": closest_ip_address,
+                        "p2p_id": global_var["p2p_id"]})
+    # if p2p node is not closer
+    else:
+        # neighbor was closer, continue searching
+        app.logger.debug("returning continue search")
+        return jsonify({"message":"continue search",
+                        "ip_address": closest_ip_address})
+            
+
+#subscribing the node to a topic
+@app.route('/subscribe', methods=['POST'])
+def http_join_topic():
+    topic = str(request.json.get('topic'))
+    thread = threading.Thread(target=join_topic, args=(topic,))
+    thread.start()
+    return jsonify({'message': "joining topic started" })
+
+# join topic
+def join_topic(topic):
+    # contact leader node with endpoint
+    app.logger.debug("calling backend to get the first topic member")
+    args = {
+        "topic": topic,
+    }
+    response = attempt_request(lambda: requests.get("http://backend-service:5000/get-first-topic-member",json=args))
+    
+    if response == None:
+        app.logger.debug("no response from backend")  
+        return 
+    #succesfully received a random p2pnode of a topic from backend
+    app.logger.debug("p2pnode and ip_address of the node in the topic are retrieved")
+    closest_ip_address = response.json().get("ip_address")
+    closest_p2p_id = None
+    #for all nodes in the topic claculate the closest ip address to make them neighbours
+    while True:
+        app.logger.debug("calling closest topic neighbour ")
+        args = {
+            "new_subscriber_lat": str(global_var["geo_lat"]),
+            "new_subscriber_long": str(global_var["geo_long"])
+        }
+        response = attempt_request(lambda: requests.get(f'http://{closest_ip_address}:5000/get-closest-topic-neighbor',json=args))
+        if response == None:
+            app.logger.debug("no response from closest subscriber")
+            break
+        message = response.json().get("message")
+        if message == "continue search":
+            # update ip_address
+            closest_ip_address = response.json().get("ip_address")
+        else:
+            # update closest_ip_address
+            app.logger.debug("closest ip address is retrieved")
+            closest_ip_address = response.json().get("ip_address")
+            closest_p2p_id = response.json().get("p2p_id")
+            break
+    
+    # make both joining p2p node and closest subscriber neighbors
+
+    # makes closest p2p node neighbor of current node
+    create_topic_neighbor(closest_ip_address,topic,closest_p2p_id)
+    # makes current node neighbor of closest p2p node
+
+    args = {
+        "ip_address": global_var["ip_address"],
+        "p2p_id": global_var["p2p_id"],
+        "topic" : topic,
+    }
+    url = f'http://{closest_ip_address}:5000/create-topic-neighbor'
+    app.logger.debug("calling create topic neighbour to make the closest node the neighbour")
+    response = attempt_request(lambda: requests.post(url,json=args))
 
 @app.route('/unsubscribe', methods=['POST'])
 def unsubscribe():
@@ -724,11 +905,32 @@ def leader_create_topic():
         app.logger.error('Node did not create topic')
         return jsonify({"message":'Node did not create topic'})
 
+# set random value for geo_lat and geo_long
+def set_geo_location():
+    # value b/w 0 to 100
+    global_var["geo_lat"] = random.randint(0,100)
+    global_var["geo_long"] = random.randint(0,100)
+    app.logger.debug(f'geo: {global_var["geo_lat"]}, {global_var["geo_long"]}')
+
+# http endpoint: get geo location of p2p node
+@app.route('/get-geo-location',methods=['GET'])
+def send_geo_location():
+    geo_lat = global_var["geo_lat"]
+    geo_long = global_var["geo_long"]
+    return jsonify({"geo_lat":str(geo_lat),"geo_long":str(geo_long)})
+
+# terminates the flask app to simulate node failure
+@app.route('/terminate', methods=['POST'])
+def http_terminate():
+    os.kill(os.getpid(), signal.SIGINT)
+    return jsonify({'message': "terminating" })
 
 if __name__ == "__main__":
     # join network and get topics
     join_network()
+    get_leader_backend()
     get_topics()
+    set_geo_location()
 
     # if no topics retrieved, exit
     if global_var["topics"] == None:
