@@ -442,22 +442,19 @@ def http_relay_post():
     data = request.get_json()
     hash_id = data.get('hash_id')
     topic = data.get('topic')
+    existing_post = get_post(hash_id)
+    app.logger.debug("this was retrieved from the database of the receiving p2pnode:" + str(existing_post))
+    app.logger.debug("database of receiving p2p node of current topic: " + str(get_posts_by_topic(topic)))
+    if existing_post is not None:
+        # A post with this post_id already exists, so the incoming post is a duplicate
+        app.logger.debug("duplicate post received " + global_var["ip_address"])
+        return jsonify({"message": "Duplicate post received"})
+    # extract the rest of the post data
+    sender_ip_address = data.get('sender_ip_address')
+    author_ip_address = data.get('author_ip_address')
     text = data.get('text')
     timestamp = data.get('timestamp')
     topic = data.get('topic')
-    author_ip_address = data.get('author_ip_address')
-    sender_ip_address = data.get('sender_ip_address')
-    # check if post already exists
-    existing_post = get_post(hash_id)
-    # if duplicate hash id,
-    if existing_post is not None:
-        # check if other values are the same too
-        if (existing_post["ip_address"] == author_ip_address and existing_post["topic"] == topic and existing_post["text"] == text and existing_post["timestamp"] == timestamp):
-            # A post with this post_id already exists, so the incoming post is a duplicate
-            app.logger.debug("this was retrieved from the database of the receiving p2pnode:" + str(existing_post))
-            app.logger.debug("duplicate post received " + global_var["ip_address"])
-            return jsonify({"message": "Duplicate post received"})
-    # store post as entry
     create_post(topic,author_ip_address,text,timestamp,hash_id)
     # if system post, get neighbors of all topics
     if topic == "system" or "delete_node":
@@ -873,37 +870,6 @@ def unsubscribed_node():
         app.logger.error('Node was not unsubscribed')
         return jsonify({"message":'Node was not unsubscribed'})
 
-@app.route('/create-topic', methods=['POST'])
-def create_topic():
-    topic = request.json.get('topic')
-    create_subscribed_topic(topic)
-
-    args = {
-        "ip_address":global_var["ip_address"],
-        "topic": topic
-    }
-    response = attempt_request(lambda: requests.post(f'http://{get_leader()[0]}/leader-create-topic', json=args))
-    if response is not None and response.json().get('status') == 'success':
-        app.logger.debug('Node created topic')
-        return jsonify({"message":'Node created topic'})
-    else:
-        app.logger.error('Node did not create topic')
-        return jsonify({"message":'Node did not create topic'})
-
-
-@app.route('/leader-create-topic', methods=['POST'])
-def leader_create_topic():
-    args = {
-        'ip_address': request.json.get('ip_address'),
-        'topic': request.json.get('topic')
-    }
-    response = attempt_request(lambda: requests.post(f'http://backend-service/create-topic', json=args))
-    if response is not None and response.json().get('status') == 'success':
-        app.logger.debug('Node created topic')
-        return jsonify({"message":'Node created topic'})
-    else:
-        app.logger.error('Node did not create topic')
-        return jsonify({"message":'Node did not create topic'})
 
 # set random value for geo_lat and geo_long
 def set_geo_location():

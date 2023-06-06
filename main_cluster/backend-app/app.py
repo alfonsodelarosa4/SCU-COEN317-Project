@@ -432,13 +432,6 @@ def unsubscribe_node():
     delete_topic_member(ip_address,topic)	
     return jsonify({'message': f'node with ip address({ip_address}) unsubscribed from topic({topic})'})	
 
-@app.route('/create-topic', methods=['POST'])	
-def node_created_topic():	
-    topic = request.json.get('topic')	
-    ip_address = request.json.get('ip_address')	
-    create_topic(topic)	
-    create_topic_member(ip_address,topic)	
-    return jsonify({"message":f'node with ip address({ip_address}) created topic({topic})'})
 # terminates the flask app to simulate backend failure
 @app.route('/terminate', methods=['POST'])
 def http_terminate():
