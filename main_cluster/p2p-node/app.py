@@ -297,7 +297,7 @@ def attempt_request(request_func):
     attempts = RETRY_COUNT
     while attempts > 0:
         # attempt to send request
-        try:
+        try:            
             response = request_func()
             response.raise_for_status() 
             app.logger.debug("request successful!")
@@ -312,6 +312,23 @@ def attempt_request(request_func):
             if attempts > 0:
                 app.logger.error("retrying in 5 seconds")
                 time.sleep(5)    
+    return None
+
+'''
+given a request_func, attempt_request attempts to
+send request call once with a timeout used for failure monitoring.
+'''
+def attempt_one_request(request_func):
+    # attempt to send request
+    try:            
+        response = request_func()
+        response.raise_for_status() 
+        app.logger.debug("request successful!")
+        return response
+    # if error when sending request
+    except requests.exceptions.RequestException as e:
+        app.logger.error(f"request attempt failed")
+        app.logger.error(f"{e}")   
     return None
 
 # join network and update ["p2p_id"]
@@ -339,10 +356,18 @@ def join_network():
 # get the information of leader from backend.
 def get_leader_backend():
 # send get request to backend-pod via backend-service
+    app.logger.debug("get_leader process")
+    app.logger.debug("get_leader: retrieve leader from backend")
     response = attempt_request(lambda: requests.get("http://backend-service:5000/get-leader-backend"))
+    if response is None:
+        #No response from backend server, assuming server failure
+        #update all p2p nodes about server failer
+        app.logger.debug("Backend server hasn't replied back")
+        send_post("system","Backend failed")
     message = response.json().get("message")
     if message == "no leader":
-        app.logger.debug("no leader retrieved")
+        app.logger.debug("get_leader: backend does not have leader")
+        app.logger.debug("get_leader: current node will attempt to be first leader")
         # no leader
         # create POST request to backend service
         args = {
@@ -350,29 +375,38 @@ def get_leader_backend():
             "p2p_id": global_var["p2p_id"]
         }
         response = attempt_request(lambda: requests.post("http://backend-service:5000/set-first-leader",json=args))
+        if response is None:
+            #No response from backend server, assuming server failure
+            #update all p2p nodes about server failer
+            app.logger.debug("Backend server hasn't replied back")
+            send_post("system","Backend failed")
 
         message = response.json().get("message")
         # if current p2p node is assigned leader
         if message == "you are leader":
+            app.logger.debug("get_leader: current node won. current will be first leader.")
             # updates leader to ip address and p2p_id of current p2p node
             set_leader(ip_address=global_var["ip_address"],p2p_id=global_var["p2p_id"])
-            app.logger.debug("current node is set to be leader")
+            leader_setup()
+            app.logger.debug(f'leader information: {global_var["leader"]}')
+            
         # if a different p2p node is assigned leader
         else:
+            app.logger.debug("get_leader: current failed to be first leader.")
             # updates leader to ip address and p2p_id from the values of the response
             # ip address and p2p_id retrieved from 
             leader_ip_address =  response.json().get("ip_address") 
             leader_p2p_id = response.json().get("p2p_id")
             set_leader(ip_address=leader_ip_address,p2p_id=leader_p2p_id)
-            app.logger.debug("ip address and p2pid are receieved from backend and they are set as leader")
+            app.logger.debug(f'leader information: {global_var["leader"]}')
         
     else:
+        app.logger.debug("get_leader: backend does have leader")
         # leader already exists and that information is received from backend
         ip_address = response.json().get("ip_address")
         p2p_id = response.json().get("p2p_id")
         set_leader(ip_address=ip_address,p2p_id=p2p_id)
-        app.logger.debug("p2p node got information of leader :")
-        app.logger.debug(f'{global_var["leader"]}')
+        app.logger.debug(f'leader information: {global_var["leader"]}')
 
 # retrieve topics and update to global_var["topics"]
 def get_topics():
@@ -380,9 +414,10 @@ def get_topics():
     response = attempt_request(lambda: requests.get("http://backend-service:5000/get-topics"))
     # if no response
     if response == None:
-        # empty topics
-        app.logger.debug("empty topic list is retrived from backend ")
-        global_var["topics"] = []
+        #No response from backend server, assuming server failure
+        #update all p2p nodes about server failer
+        app.logger.debug("Backend server hasn't replied back")
+        send_post("system","Backend failed")
         return
 
     # get topics and assign topics
@@ -418,6 +453,7 @@ def send_post(topic,text):
     # if not system post, get neighbors of one topic
     else:
         neighbors = get_topic_neighbors(topic)
+    app.logger.debug(f'send_post: this current p2p node will create the following post: topic({topic}), text({text}), timestamp({timestamp})')
     # iterate through each neighbor, send post to neighbor
     for neighbor in neighbors:
         args = {
@@ -428,12 +464,13 @@ def send_post(topic,text):
             "timestamp": str(timestamp),
             "topic": topic,
         }
+        app.logger.debug(f'send_post: sending post to p2p node with ip address ({neighbor})')
         url = f"http://{neighbor}:5000/relay_post"
         response = attempt_request(lambda: requests.post(url,json=args))
         
         if response is None:
             app.logger.debug(f"{neighbor} did not receive the post related to the topic{topic}")
-    app.logger.debug(f"finished sending post related to the topic{topic}")
+    app.logger.debug(f"finished sending post related to the topic: {topic}")
 
 # http endpoint: receive post and send to neighbors except sender. if duplicate, ignore
 @app.route('/relay_post', methods=['POST'])
@@ -455,6 +492,19 @@ def http_relay_post():
     text = data.get('text')
     timestamp = data.get('timestamp')
     topic = data.get('topic')
+    author_ip_address = data.get('author_ip_address')
+    sender_ip_address = data.get('sender_ip_address')
+    app.logger.debug(f'relay_post: received post with the following information: topic ({topic}), text ({text}), timestamp({timestamp})')
+    # check if post already exists
+    existing_post = get_post(hash_id)
+    # if duplicate hash id,
+    if existing_post is not None:
+        # check if other values are the same too
+        if (existing_post["ip_address"] == author_ip_address and existing_post["topic"] == topic and existing_post["text"] == text and existing_post["timestamp"] == timestamp):
+            # A post with this post_id already exists, so the incoming post is a duplicate
+            app.logger.debug("relay_post: duplicate post received ")
+            return jsonify({"message": "Duplicate post received"})
+    # store post as entry
     create_post(topic,author_ip_address,text,timestamp,hash_id)
     # if system post, get neighbors of all topics
     if topic == "system" or "delete_node":
@@ -465,11 +515,13 @@ def http_relay_post():
     # if post is delete node
     if topic == "delete_node":
         delete_neighbor_from_all_topics(text)
+    app.logger.debug(f'relay_post: p2p node will now relay the post to other topic neighbors')
     # iterate through each neighbor, send post to neighbor
     for neighbor in neighbors:
         # do not sent post to sender
         if neighbor == author_ip_address or sender_ip_address:
             continue
+        app.logger.debug(f'relay_post: p2p node will now relay the post to p2p node with ip address {neighbor}')
         args = {
             "sender_ip_address": global_var["ip_address"],
             "author_ip_address": author_ip_address,
@@ -481,27 +533,28 @@ def http_relay_post():
         url = f"http://{neighbor}:5000/relay_post"
         response = attempt_request(lambda: requests.post(url,json=args))
         if response is None:
-            app.logger.debug(f"{neighbor} did not receive the post related to the topic{topic}")
+            app.logger.debug(f"relay_post: {neighbor} did not receive the post related to the topic{topic}")
     # Send a response back to the originating node
     return jsonify({"message": "Post received and saved"})
 
 # check backend for failure
 def checking_backend():
+    app.logger.debug("checking_backend: checking backend for failure")
     # get current learder's ip_address
-    (ip_address,p2p_id) = get_leader()
     args = {
-        "ip_address": ip_address,
+        "ip_address": global_var["ip_address"],
         "message": "checking on backend server"
     }
     url = f"http://backend-service:5000/failure-ping"
-    response = attempt_request(lambda: requests.post(url,json=args))
+    response = attempt_one_request(lambda: requests.post(url,json=args, timeout=5))
     # if no response, assume failure
     if response is None:
         #No response from backend server, assuming server failure
         #update all p2p nodes about server failer
-        app.logger.debug("Backend server haven't replyed back")
+        app.logger.debug("checking_backend: Backend server hasn't replied back. Backend server failed. Will send 'backend server terminated' message to all neighbors.")
         send_post("system","Backend failed")
-    app.logger.debug("Backend server responded")
+    else:
+        app.logger.debug("checking_backend: Backend server responded")
 
 # ping-ack protocol: receive failure ping, send ack
 @app.route('/failure-ping', methods=['POST'])
@@ -510,8 +563,15 @@ def failure_ping():
 
 # check random node for failure
 def checking_random_node():
+    app.logger.debug("checking_random_node: random p2p node ping monitor: checking random p2p node for failure")
     # get ip addresses of all neighbors
     ip_addresses = get_topic_neighbors_from_all_topics()
+    (leader_ip_address, _ ) = get_leader()
+    if leader_ip_address in ip_addresses:
+        ip_addresses.remove(leader_ip_address)
+    if len(ip_addresses) == 0:
+        app.logger.debug("checking_random_node: no neighbors")
+        return
     # pick a random one
     random_ip_address = random.choice(ip_addresses)
     args = {
@@ -519,19 +579,20 @@ def checking_random_node():
     }
     # check that ip address
     url = f"http://{random_ip_address}:5000/failure-ping"
-    response = attempt_request(lambda: requests.post(url,json=args))
+    response = attempt_one_request(lambda: requests.post(url,json=args, timeout=5))
     # if no response, assume failure
     if response is None:
         #No response from thenode, assuming node failure
         #update all p2p nodes about node failer
-        app.logger.debug(f"node with ip address {random_ip_address} hasn't replyed back")
+        app.logger.debug(f"checking_random_node: node with ip address {random_ip_address} hasn't replied back")
+        app.logger.debug(f"checking_random_node: sending all neighbors that the following p2p node has failed: {random_ip_address}")
         delete_neighbor_from_all_topics(random_ip_address)
         # tell leader node
         (leader_ip_address,p2p_id) = get_leader()
         url = f"http://{leader_ip_address}:5000/failed-node"
         response = attempt_request(lambda: requests.post(url,json={"message":f"{random_ip_address}"}))
     else:
-        app.logger.debug(f"Node {random_ip_address} responded")
+        app.logger.debug(f"checking_random_node: Node {random_ip_address} responded")
 
 # if node failed, send failure node post to everyone
 @app.route('/failed-node', methods=['POST'])
@@ -551,6 +612,7 @@ def start_election():
 
 # actual election: bully algorithm
 def election():
+    app.logger.debug("leader election: starting leader election in this node")
     rw_locks["election"].acquire_writelock()
     # STEP 1: see if current p2p_id is bigger than p2p_id of p2p neighbors
     # get p2p_id of current p2p node
@@ -576,34 +638,46 @@ def election():
     # STEP 2: If the p2p ids of the p2p neighbors are bigger, send start election to them
     # call others
     if neighbors_are_bigger:
-        app.logger.debug("p2p ids of neighbors are bigger")
-        app.logger.debug("send start-election request to those neighbors")
+        app.logger.debug('leader election: the p2p ids of neighbors are bigger')
         bigger_neighbors_list = list(bigger_neighbors_hash.items())
         # sort by p2p id
         bigger_neighbors_list.sort(key= lambda value:value[1])
         # reverse order
         bigger_neighbors_list.reverse()
-
-        bigger_neighbor_responded = False
-
         for ip_address,p2p_id in bigger_neighbors_list:
+            app.logger.debug(f"leader election: leader election request will be sent to {ip_address}")
             # send start election command to that ip address
             url = f"http://{ip_address}:5000/start-election"
             response = attempt_request(lambda: requests.post(url))
 
             if response is not None:
-                app.logger.debug(f"{ip_address} responded and will perform election")
+                app.logger.debug(f"leader election: {ip_address} will perform election")
                 rw_locks["election"].release_writelock()
                 return
-        app.logger.debug("none of the neighbors responded")
+            else:
+                app.logger.debug(f"leader election: {ip_address} did not responsed")
+        app.logger.debug("leader election: Since none of the neighbors responded,")
 
     # STEP 3: If the other p2p nodes are not candidates or did not respond
     # curent p2p node will elect itself
     # elect itself
-    app.logger.debug("p2p node will elect itself")
+    app.logger.debug("leader election: current p2p node will elect itself")
     leader_ip_address = global_var["ip_address"]
     leader_p2p_id =global_var["p2p_id"]
+    leader_setup()
     set_leader(leader_ip_address,leader_p2p_id)
+    args = {
+        "ip_address": global_var["ip_address"],
+        "p2p_id": global_var["p2p_id"]
+    }
+    url = f"http://backend-service:5000/update-leader"
+    response = attempt_request(lambda: requests.post(url,json=args))
+    if response is None:
+        #No response from backend server, assuming server failure
+        #update all p2p nodes about server failer
+        app.logger.debug("Backend server hasn't replied back")
+        send_post("system","Backend failed")
+
     # send coordinator messages to neighbors
     thread = threading.Thread(target=send_coordinator_message,args=(leader_ip_address,leader_p2p_id,"",))
     thread.start()
@@ -613,12 +687,13 @@ def election():
 def send_coordinator_message(leader_ip_address,leader_p2p_id,sender_ip_address):
     # get all neighbors
     ip_addresses = get_topic_neighbors_from_all_topics()
-    app.logger.debug("p2p node send coordinator message to other nodes")
+    app.logger.debug("coordinator message: current p2p node will send coordinator message to neighbors")
     # iterate through each ip address
     for ip_address in ip_addresses:
         # do not send coordinator message to sender
         if sender_ip_address == ip_address:
             continue
+        app.logger.debug(f'coordinator message: coordinator message send to {ip_addresses}')
         args = {
             "ip_address": leader_ip_address,
             "p2p_id": leader_p2p_id,
@@ -634,20 +709,20 @@ def send_coordinator_message(leader_ip_address,leader_p2p_id,sender_ip_address):
 # http endponit: to relay coordinator messages
 @app.route('/relay-coordinator-message',methods=['POST'])
 def relay_coordinator_message():
-    app.logger.debug("p2p node received relay-coordinator-message")
+    app.logger.debug("relay coordinator message: p2p node received relay-coordinator-message")
     # get json info from http request
     leader_ip_address = request.json.get('ip_address')
     leader_p2p_id = request.json.get('p2p_id')
     sender_ip_address = request.json.get('sender')
-    current_leader_ip_address = get_leader()
+    (current_leader_ip_address,p2p_id) = get_leader()
     # if leader is same, ignore
     if current_leader_ip_address == leader_ip_address:
-        message = f'{current_leader_ip_address} was already elected'
+        message = f'relay coordinator message: {current_leader_ip_address} was already elected. ignore message'
         app.logger.debug(message)
         return jsonify({"message":message})
     # if leader not the same, update leader and send message to coordinator
     else:
-        message = f'{current_leader_ip_address} will be elected'
+        message = f'relay coordinator message: {current_leader_ip_address} is new leader. coordinator message will be sent'
         set_leader(leader_ip_address,leader_p2p_id)
         thread = threading.Thread(target=send_coordinator_message,args=(leader_ip_address,leader_p2p_id,sender_ip_address))
         thread.start()
@@ -698,55 +773,120 @@ def get_closest_topic_member():
         app.logger.debug("returning continue search")
         return jsonify({"message":"continue search",
                         "ip_address": closest_ip_address})
-            
 
-#subscribing the node to a topic
+# Returns whether P2P node is leader
+@app.route('/is-leader', methods=['GET'])
+def is_leader():
+    # retreive leader info stored
+    leader_info = get_leader()
+    # if no leader, return False
+    if leader_info == None:
+        return jsonify({"message": "No leader elected yet","value": "False"})
+    # retrieve leader info
+    (current_leader_ip_address,p2p_id) =  leader_info
+
+    # if p2p node is leader return True
+    if current_leader_ip_address == global_var["ip_address"]:
+        return jsonify({"message": "P2P node is leader","value": "True"})
+    # if not, return False
+    else:
+        return jsonify({"message": "P2P node is not leader","value": "False"})
+
+# subscribing the node to a topic
 @app.route('/subscribe', methods=['POST'])
 def http_join_topic():
     topic = str(request.json.get('topic'))
+    # create separate thread to handle subscription
     thread = threading.Thread(target=join_topic, args=(topic,))
     thread.start()
     return jsonify({'message': "joining topic started" })
 
-# join topic
-def join_topic(topic):
-    # contact leader node with endpoint
-    app.logger.debug("calling backend to get the first topic member")
+# http endpoint so that leader receives subscription for new node
+@app.route('/leader-subscribe', methods=['POST'])
+def leader_subscribe():
+    topic = request.json.get('topic')
+    new_ip_address = request.json.get('ip_address')
+
     args = {
+        "ip_address": new_ip_address,
         "topic": topic,
     }
-    response = attempt_request(lambda: requests.get("http://backend-service:5000/get-first-topic-member",json=args))
     
+    app.logger.debug(f'leader_subscribe: this leader p2p node received subscription request for topic {topic} from this p2p node: {new_ip_address}')
+    app.logger.debug(f'leader_subscribe: this leader p2p node will contact backend to set the p2p node {new_ip_address} as topic member for {topic}')
+    # leader subscribe
+    response = attempt_request(lambda: requests.post("http://backend-service:5000/p2p-node-subscribe",json=args))
     if response == None:
-        app.logger.debug("no response from backend")  
-        return 
-    #succesfully received a random p2pnode of a topic from backend
-    app.logger.debug("p2pnode and ip_address of the node in the topic are retrieved")
+        app.logger.error(f'leader_subscribe: the p2p node {new_ip_address} was not able to become topic member for {topic}')
+        return jsonify({"message": "server error"}), 500
+    else:
+        app.logger.error(f'leader_subscribe: the p2p node {new_ip_address} is now topic member for {topic}')
+        app.logger.error(f'leader_subscribe: messaging {new_ip_address} now with closest topic member')
+        return jsonify({"ip_address": response.json().get("ip_address"),"message": response.json().get("message")})
+
+# join topic
+def join_topic(topic):
+    # contact leader node with endpoint to subscribe to a topic
+    app.logger.debug('join_topic: p2p node will join the following topic: {topic}')
+    args = {
+        "topic": topic,
+        "ip_address": global_var["ip_address"]
+    }
+    app.logger.debug('join_topic: p2p node will communicate to leader p2p node to join: {topic}')
+
+    leader_info = get_leader()
+    if leader_info == None:
+        app.logger.debug("join_topic: there is no leader")
+        return
+    (current_leader_ip_address,p2p_id) = leader_info
+
+    response = attempt_request(lambda: requests.post(f"http://{current_leader_ip_address}:5000/leader-subscribe",json=args))
+
+    if response == None:
+        app.logger.debug("join_topic: no response from backend")
+        return
+    
+    message_received = response.json().get("message")
+
+    if message_received == "no other node":
+        app.logger.debug("join_topic: there weren't other topic members to connect with")
+        return
+
+    # succesfully received a random p2pnode of a topic from backend
+    app.logger.debug(f'join_topic: p2pid and ip_address of random node in topic {topic} are retrieved')
     closest_ip_address = response.json().get("ip_address")
     closest_p2p_id = None
-    #for all nodes in the topic claculate the closest ip address to make them neighbours
+    # for all nodes in the topic calculate the closest ip address to make them neighbors
     while True:
-        app.logger.debug("calling closest topic neighbour ")
+        app.logger.debug("join_topic: calling closest topic neighbour")
         args = {
             "new_subscriber_lat": str(global_var["geo_lat"]),
             "new_subscriber_long": str(global_var["geo_long"])
         }
+        # get the closest neighbor
+        app.logger.debug(f'join_topic: contacting p2p with the following ip_address for closest neighbor: {closest_ip_address}')
         response = attempt_request(lambda: requests.get(f'http://{closest_ip_address}:5000/get-closest-topic-neighbor',json=args))
         if response == None:
             app.logger.debug("no response from closest subscriber")
             break
         message = response.json().get("message")
+        # if there's another close neighbor keep searching
         if message == "continue search":
+            old_ip_address = closest_ip_address
             # update ip_address
             closest_ip_address = response.json().get("ip_address")
+            app.logger.debug(f'join_topic: p2p node {old_ip_address} recommends contacting this p2p node {closest_ip_address}')
+            
+        # if p2p node contacted was the closest neighbor, set both of them as neighbor
         else:
             # update closest_ip_address
-            app.logger.debug("closest ip address is retrieved")
             closest_ip_address = response.json().get("ip_address")
             closest_p2p_id = response.json().get("p2p_id")
+            app.logger.debug(f'join_topic: closest ip address retrieved {closest_ip_address}')
             break
     
     # make both joining p2p node and closest subscriber neighbors
+    app.logger.debug(f'join_topic: both of the following ip addresses will be neighbors for topic {topic}: {global_var["ip_address"]} and {closest_ip_address}')
 
     # makes closest p2p node neighbor of current node
     create_topic_neighbor(closest_ip_address,topic,closest_p2p_id)
@@ -758,8 +898,8 @@ def join_topic(topic):
         "topic" : topic,
     }
     url = f'http://{closest_ip_address}:5000/create-topic-neighbor'
-    app.logger.debug("calling create topic neighbour to make the closest node the neighbour")
     response = attempt_request(lambda: requests.post(url,json=args))
+
 
 @app.route('/unsubscribe', methods=['POST'])
 def unsubscribe():
@@ -891,6 +1031,9 @@ def http_terminate():
     os.kill(os.getpid(), signal.SIGINT)
     return jsonify({'message': "terminating" })
 
+def leader_setup():
+    scheduler.add_job(id='checking_backend', func=checking_backend, trigger='interval', seconds=10)
+
 if __name__ == "__main__":
     # join network and get topics
     join_network()
@@ -909,7 +1052,7 @@ if __name__ == "__main__":
     # jobs can be added and removed add any time
     # even in functions and route functions
     # scheduler.add_job(id='print_job', func=print_job, trigger='interval', seconds=10)
-
+    # scheduler.add_job(id='checking_random_node', func=checking_random_node, trigger='interval', seconds=10)
 
     # run flask app
     app.run(host="0.0.0.0", port=5000)
