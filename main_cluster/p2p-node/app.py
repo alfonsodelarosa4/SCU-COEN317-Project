@@ -1052,7 +1052,7 @@ if __name__ == "__main__":
     # jobs can be added and removed add any time
     # even in functions and route functions
     # scheduler.add_job(id='print_job', func=print_job, trigger='interval', seconds=10)
-    # scheduler.add_job(id='checking_random_node', func=checking_random_node, trigger='interval', seconds=10)
+    scheduler.add_job(id='checking_random_node', func=checking_random_node, trigger='interval', seconds=10)
 
     # run flask app
     app.run(host="0.0.0.0", port=5000)
