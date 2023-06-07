@@ -177,7 +177,7 @@ git push
 2. cd in to **testing** folder
 3. notes on time 20s, 3m, 2h, 1h20m, 3h30m10s
 ```
-locust -f topic-test.py --users 4 --spawn-rate 2 --run-time 20s
+locust -f publish-test.py --web-host=127.0.0.1 --web-port=8089 --users 50 --spawn-rate 1 --run-time 120s
 ```
 3. Run test and put results in csv with the following command
 

@@ -130,6 +130,12 @@ def get_firstp2pnode():
         rw_locks["p2pnode"].release_readlock()
         app.logger.error('p2pnode not found')
 
+def get_p2pnode_avoid_ip(ip_address):
+    rw_locks["p2pnode"].acquire_readlock()
+    p2pnode = p2pnodes_db.find_one({"ip_address": {"$ne": ip_address}})
+    rw_locks["p2pnode"].release_readlock()
+    return p2pnode
+
 # delete p2pnode
 def delete_p2pnode(ip_address):
     # concurrency: read-write lock
@@ -237,17 +243,10 @@ def get_topic_members(topic):
     rw_locks["topic-member"].release_readlock()
     return [member["ip_address"] for member in members]
 
-# get p2pnode
-@app.route('/get-first-topic-member', methods=['GET'])
-def http_get_firsttopicmember():
-    topic = request.json.get('topic')
-    node = get_firsttopicmember(topic)
-    return jsonify({"ip_address": node["ip_address"]})
-
-def get_firsttopicmember(topic):
+def get_firsttopicmember(topic,ip_address):
     # concurrency: read-write lock
     rw_locks["p2pnode"].acquire_readlock()
-    p2pnode = topic_members_db.find_one({'topic':topic})
+    p2pnode = topic_members_db.find_one({'topic':topic,"ip_address": {"$ne": ip_address}})
     rw_locks["p2pnode"].release_readlock()
     if p2pnode:        
         return p2pnode
@@ -306,6 +305,23 @@ def attempt_request(request_func):
                 time.sleep(5)    
     return None
 
+'''
+given a request_func, attempt_request attempts to
+send request call once with a timeout used for failure monitoring.
+'''
+def attempt_one_request(request_func):
+    # attempt to send request
+    try:            
+        response = request_func()
+        response.raise_for_status() 
+        app.logger.debug("request successful!")
+        return response
+    # if error when sending request
+    except requests.exceptions.RequestException as e:
+        app.logger.error(f"request attempt failed")
+        app.logger.error(f"{e}")
+    return None
+
 # get topics, return topics
 @app.route('/get-topics', methods=['GET'])
 def send_topics():
@@ -319,12 +335,13 @@ def send_leader_backend():
     leader_info = get_leader()
     # if no leader, send "no leader"
     if leader_info == None:
-        app.logger.debug("no leader in backend after receiving GET")
+        app.logger.debug("get-leader-backend: no leader in backend")
         return jsonify({'message': "no leader"})
     # if leader, send leader info
     else:
-        app.logger.debug("leader retrieved")
+        app.logger.debug("get-leader-backend: leader is present")
         (ip_address,p2p_id) = leader_info
+        app.logger.debug(f'leader information: {str(leader_info)}')
         return jsonify({'message': 'Found',
                         'ip_address':ip_address,
                         'p2p_id':p2p_id})
@@ -339,14 +356,14 @@ def set_first_leader_backend():
     # if no leader
     if global_var["leader"] == None:
         # change leader to received ip address p2p id
-        app.logger.debug(f'The following P2P node is a leader: {ip_address}')
+        app.logger.debug(f'set-first-leader: The following P2P node made it first and will be the leader: {ip_address}')
         global_var["leader"] = (ip_address,p2p_id)
         rw_locks["leader"].release_writelock()
         return jsonify({'message': 'you are leader'})
     # if leader exists
     else:
         # receive and send leader info
-        app.logger.debug(f'The following P2P node tried to be the leader: {ip_address}')
+        app.logger.debug(f'set-first-leader: The following P2P node failed to be the first leader: {ip_address}')
         (ip_address,p2p_id) = global_var["leader"]
         rw_locks["leader"].release_writelock()
         return jsonify({'message': 'Found',
@@ -398,27 +415,63 @@ def failure_ping():
     ip_address = str(request.json.get('ip_address'))
     return jsonify({"message": f"Message received from leader node {ip_address} and Acknowledged"})
 
-# pring-ack protocol: send leader ack
+# get p2pnode
+@app.route('/p2p-node-subscribe', methods=['POST'])
+def http_get_firsttopicmember():
+    topic = request.json.get('topic')
+    ip_address = request.json.get('ip_address')
+    create_topic(topic)
+    app.logger.debug(f'p2p_node_subscribe: setting p2p node {ip_address} as topic member for {topic}')
+    create_topic_member(ip_address,topic)
+    app.logger.debug(f'p2p_node_subscribe: returning closest topic member to p2p node {ip_address}')
+    node = get_firsttopicmember(topic,ip_address)
+    if node:
+        return jsonify({"message":"another node","ip_address": node["ip_address"]})
+    else:
+        return jsonify({"message":"no other node", "ip_address": "none"})
+
+@app.route("/update-leader",methods=['POST'])
+def update_leader():
+    p2p_id = request.json.get('p2p_id')
+    ip_address = request.json.get('ip_address')
+    global_var["bad leader"] = False
+    set_leader(ip_address,p2p_id)
+    return jsonify({"message": f'update_leader: the following p2p node is the new leader: {ip_address}'})
+
+# ping-ack protocol: send leader ack
 def checking_leader():
+    app.logger.debug("checking_leader: checking leader for failure")
+    leader_info = get_leader()
+    # leader info retrieved
+    if leader_info == None:
+        app.logger.debug("checking_leader: no leader. exiting leader monitor")
+        return
+    if global_var["bad leader"] == True:
+        app.logger.debug("checking_leader: bad leader. exiting leader monitor")
+        return
     # get current learder's ip_address
-    (ip_address,p2p_id) = get_leader()
+    (leader_ip_address,p2p_id) = leader_info
+    app.logger.debug(f'checking_leader: leader ip address: {leader_ip_address}')
     args = {
         "message": "checking on leader node"
     }
     # send ping ack to leader
-    url = f"http://{ip_address}:5000/failure-ping"
-    response = attempt_request(lambda: requests.post(url,json=args))
+    url = f"http://{leader_ip_address}:5000/failure-ping"
+    response = attempt_one_request(lambda: requests.post(url,json=args, timeout=5))
     
     # if no response, assume leader failed
     if response is None:
         #No response from leader node, assuming node failure
         #update all p2p nodes about leader failer
-        app.logger.debug("Leader node hasn't replied back")
-        p2pnode = get_firstp2pnode()
+        app.logger.debug("checking_leader: Leader node hasn't replied back")
+        global_var["bad leader"] = True
+        p2pnode = get_p2pnode_avoid_ip(leader_ip_address)
         ip_address = p2pnode['ip_address']
         url = f"http://{ip_address}:5000/start-election"
+        app.logger.debug(f'checking_leader: starting election to {ip_address}')
         response = attempt_request(lambda: requests.post(url))
-    app.logger.debug("Leader node responded")
+    else:
+        app.logger.debug("Leader node responded")
 
 # terminates the flask app to simulate backend failure
 @app.route('/terminate', methods=['POST'])
@@ -430,5 +483,6 @@ if __name__ == "__main__":
     scheduler.init_app(app)
     scheduler.start()
 
+    scheduler.add_job(id='checking_leader', func=checking_leader, trigger='interval', seconds=10)
     # run flask app
     app.run(host="0.0.0.0", port=5000)
